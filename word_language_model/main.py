@@ -10,6 +10,8 @@ import data
 import model
 
 parser = argparse.ArgumentParser(description='PyTorch Wikitext-2 RNN/LSTM Language Model')
+parser.add_argument('--prefix-len', type=int, default=3,
+                    help='prefix length of sentences to train on')
 parser.add_argument('--data', type=str, default='./data/wikitext-2',
                     help='location of the data corpus')
 parser.add_argument('--model', type=str, default='LSTM',
@@ -26,10 +28,10 @@ parser.add_argument('--clip', type=float, default=0.25,
                     help='gradient clipping')
 parser.add_argument('--epochs', type=int, default=40,
                     help='upper epoch limit')
-parser.add_argument('--batch_size', type=int, default=20, metavar='N',
+parser.add_argument('--batch_size', type=int, default=100, metavar='N',
                     help='batch size')
-parser.add_argument('--bptt', type=int, default=35,
-                    help='sequence length')
+# parser.add_argument('--bptt', type=int, default=35,
+#                     help='sequence length')
 parser.add_argument('--dropout', type=float, default=0.2,
                     help='dropout applied to layers (0 = no dropout)')
 parser.add_argument('--tied', action='store_true',
@@ -72,16 +74,22 @@ corpus = data.Corpus(args.data)
 
 def batchify(data, bsz):
     # Work out how cleanly we can divide the dataset into bsz parts.
-    nbatch = data.size(0) // bsz
+    data_width = data.size(0) // (args.prefix_len * bsz)
+
     # Trim off any extra elements that wouldn't cleanly fit (remainders).
-    data = data.narrow(0, 0, nbatch * bsz)
+    data = data.narrow(0, 0, data_width * args.prefix_len * bsz)
+    if data.size(0) % args.prefix_len != 0:
+        print("Error: Data is not a multiple of 3")
+    if data.size(0) % bsz != 0:
+        print("Error: Data is not a multiple of batch size")
+
     # Evenly divide the data across the bsz batches.
-    data = data.view(bsz, -1).t().contiguous()
+    data = data.view(-1, 3).t().contiguous()
     if args.cuda:
         data = data.cuda()
     return data
 
-eval_batch_size = 10
+eval_batch_size = 9  ## Must also be a multiple of 3
 train_data = batchify(corpus.train, args.batch_size)
 val_data = batchify(corpus.valid, eval_batch_size)
 test_data = batchify(corpus.test, eval_batch_size)
@@ -119,10 +127,12 @@ def repackage_hidden(h):
 # by the batchify function. The chunks are along dimension 0, corresponding
 # to the seq_len dimension in the LSTM.
 
-def get_batch(source, i, evaluation=False):
-    seq_len = min(args.bptt, len(source) - 1 - i)
-    data = Variable(source[i:i+seq_len], volatile=evaluation)
-    target = Variable(source[i+1:i+1+seq_len].view(-1))
+## Modified by TM to take the next seq_len-1 words and use it to predict the seq_len_th word
+def get_batch(source, i, bsz, evaluation=False):
+    seq_len = args.prefix_len # min(args.bptt, len(source) - 1 - i)
+    data = Variable(source[:seq_len-1,i:i+bsz], volatile=evaluation)
+    #target = Variable(source[i+1:i+1+seq_len].view(-1))
+    target = Variable(source[seq_len-1,i:i+bsz].view(-1))
     return data, target
 
 
@@ -132,11 +142,11 @@ def evaluate(data_source):
     total_loss = 0
     ntokens = len(corpus.dictionary)
     hidden = model.init_hidden(eval_batch_size)
-    for i in range(0, data_source.size(0) - 1, args.bptt):
-        data, targets = get_batch(data_source, i, evaluation=True)
+    for i in range(0, data_source.size(0) - 1, eval_batch_size):
+        data, targets = get_batch(data_source, i, eval_batch_size, evaluation=True)
         output, hidden = model(data, hidden)
-        output_flat = output.view(-1, ntokens)
-        total_loss += len(data) * criterion(output_flat, targets).data
+        # output_flat = output[-1,:,:]
+        total_loss += len(data) * criterion(output, targets).data
         hidden = repackage_hidden(hidden)
     return total_loss[0] / len(data_source)
 
@@ -148,18 +158,24 @@ def train():
     start_time = time.time()
     ntokens = len(corpus.dictionary)
     hidden = model.init_hidden(args.batch_size)
-    for batch, i in enumerate(range(0, train_data.size(0) - 1, args.bptt)):
-        data, targets = get_batch(train_data, i)
+    # Instead of an argument for bptt, only use sequences of length 3, where the first
+    # two words are input and the third is the target (get_batch() handles this).
+    for batch, i in enumerate(range(0, train_data.size(1) - 1, args.batch_size)):
+        data, targets = get_batch(train_data, i, args.batch_size)
         # Starting each batch, we detach the hidden state from how it was previously produced.
         # If we didn't, the model would try backpropagating all the way to start of the dataset.
         hidden = repackage_hidden(hidden)
         model.zero_grad()
         output, hidden = model(data, hidden)
-        loss = criterion(output.view(-1, ntokens), targets)
+        loss = criterion(output, targets)
         loss.backward()
 
         # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
         torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
+        for p in model.parameters():
+            is_none = p.grad is None
+            print("Dim of this parameter is %s and grad %s" % (str(p.shape), "is none" if is_none else "exists"))
+
         for p in model.parameters():
             p.data.add_(-lr, p.grad.data)
 
@@ -170,7 +186,7 @@ def train():
             elapsed = time.time() - start_time
             print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:02.2f} | ms/batch {:5.2f} | '
                     'loss {:5.2f} | ppl {:8.2f}'.format(
-                epoch, batch, len(train_data) // args.bptt, lr,
+                epoch, batch, len(train_data) // args.prefix_len, lr,
                 elapsed * 1000 / args.log_interval, cur_loss, math.exp(cur_loss)))
             total_loss = 0
             start_time = time.time()

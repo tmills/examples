@@ -30,7 +30,11 @@ class Corpus(object):
         with open(path, 'r') as f:
             tokens = 0
             for line in f:
-                words = line.split() + ['<eos>']
+                words = line.split()[:3] #+ ['<eos>']
+                if len(words) != 3:
+                    # ignore lines (sentences) with < 3 tokens
+                    continue
+
                 tokens += len(words)
                 for word in words:
                     self.dictionary.add_word(word)
@@ -40,7 +44,11 @@ class Corpus(object):
             ids = torch.LongTensor(tokens)
             token = 0
             for line in f:
-                words = line.split() + ['<eos>']
+                words = line.split()[:3] # + ['<eos>']
+                if len(words) != 3:
+                    # ignore lines (sentences) with < 3 tokens
+                    continue
+
                 for word in words:
                     ids[token] = self.dictionary.word2idx[word]
                     token += 1

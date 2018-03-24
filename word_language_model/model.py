@@ -1,5 +1,7 @@
 import torch.nn as nn
 from torch.autograd import Variable
+from lcrnn import LcRnn
+from srnn import StochasticRnn
 
 class RNNModel(nn.Module):
     """Container module with an encoder, a recurrent module, and a decoder."""
@@ -7,16 +9,20 @@ class RNNModel(nn.Module):
     def __init__(self, rnn_type, ntoken, ninp, nhid, nlayers, dropout=0.5, tie_weights=False):
         super(RNNModel, self).__init__()
         self.drop = nn.Dropout(dropout)
-        self.encoder = nn.Embedding(ntoken, ninp)
         if rnn_type in ['LSTM', 'GRU']:
             self.rnn = getattr(nn, rnn_type)(ninp, nhid, nlayers, dropout=dropout)
+        elif rnn_type=='NLC':
+            self.rnn =  LcRnn(ninp, num_layers=nlayers, hidden_size=nhid)
+        elif rnn_type=='SRNN':
+            self.rnn = StochasticRnn(ninp, num_layers=nlayers, hidden_size=nhid)
         else:
             try:
                 nonlinearity = {'RNN_TANH': 'tanh', 'RNN_RELU': 'relu'}[rnn_type]
             except KeyError:
                 raise ValueError( """An invalid option for `--model` was supplied,
-                                 options are ['LSTM', 'GRU', 'RNN_TANH' or 'RNN_RELU']""")
+                                 options are ['LSTM', 'GRU', 'NLC', 'RNN_TANH' or 'RNN_RELU']""")
             self.rnn = nn.RNN(ninp, nhid, nlayers, nonlinearity=nonlinearity, dropout=dropout)
+        self.encoder = nn.Embedding(ntoken, ninp)
         self.decoder = nn.Linear(nhid, ntoken)
 
         # Optionally tie weights as in:
@@ -46,13 +52,15 @@ class RNNModel(nn.Module):
         emb = self.drop(self.encoder(input))
         output, hidden = self.rnn(emb, hidden)
         output = self.drop(output)
-        decoded = self.decoder(output.view(output.size(0)*output.size(1), output.size(2)))
-        return decoded.view(output.size(0), output.size(1), decoded.size(1)), hidden
+        decoded = self.decoder(output[-1])
+        return decoded, hidden
 
     def init_hidden(self, bsz):
         weight = next(self.parameters()).data
         if self.rnn_type == 'LSTM':
             return (Variable(weight.new(self.nlayers, bsz, self.nhid).zero_()),
                     Variable(weight.new(self.nlayers, bsz, self.nhid).zero_()))
+        elif self.rnn_type == 'NLC':
+            return self.rnn.init_hidden(bsz)
         else:
             return Variable(weight.new(self.nlayers, bsz, self.nhid).zero_())
