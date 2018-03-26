@@ -2,6 +2,7 @@ import torch.nn as nn
 from torch.autograd import Variable
 from lcrnn import LcRnn
 from srnn import StochasticRnn
+import numpy as np
 
 class RNNModel(nn.Module):
     """Container module with an encoder, a recurrent module, and a decoder."""
@@ -37,6 +38,10 @@ class RNNModel(nn.Module):
             self.decoder.weight = self.encoder.weight
 
         self.init_weights()
+
+        trainable_parameters = filter(lambda p: p.requires_grad, self.parameters())
+        num_params = sum([np.prod(p.size()) for p in trainable_parameters])
+        print("Model initialized with %d trainable parameters" % (num_params))
 
         self.rnn_type = rnn_type
         self.nhid = nhid

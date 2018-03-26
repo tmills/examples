@@ -141,13 +141,13 @@ def evaluate(data_source):
     model.eval()
     total_loss = 0
     ntokens = len(corpus.dictionary)
-    hidden = model.init_hidden(eval_batch_size)
     for i in range(0, data_source.size(0) - 1, eval_batch_size):
+        hidden = model.init_hidden(eval_batch_size)
         data, targets = get_batch(data_source, i, eval_batch_size, evaluation=True)
         output, hidden = model(data, hidden)
         # output_flat = output[-1,:,:]
         total_loss += len(data) * criterion(output, targets).data
-        hidden = repackage_hidden(hidden)
+        # hidden = repackage_hidden(hidden)
     return total_loss[0] / len(data_source)
 
 
@@ -157,25 +157,26 @@ def train():
     total_loss = 0
     start_time = time.time()
     ntokens = len(corpus.dictionary)
-    hidden = model.init_hidden(args.batch_size)
+    
     # Instead of an argument for bptt, only use sequences of length 3, where the first
     # two words are input and the third is the target (get_batch() handles this).
     for batch, i in enumerate(range(0, train_data.size(1) - 1, args.batch_size)):
         data, targets = get_batch(train_data, i, args.batch_size)
         # Starting each batch, we detach the hidden state from how it was previously produced.
         # If we didn't, the model would try backpropagating all the way to start of the dataset.
-        hidden = repackage_hidden(hidden)
+        # hidden = repackage_hidden(hidden)
+        hidden = model.init_hidden(args.batch_size)
         model.zero_grad()
         output, hidden = model(data, hidden)
         loss = criterion(output, targets)
         loss.backward()
 
+        # for p in model.parameters():
+        #     is_none = p.grad is None
+        #     print("Dim of this parameter is %s and grad %s" % (str(p.shape), "is none" if is_none else "exists"))
         # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
-        torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
-        for p in model.parameters():
-            is_none = p.grad is None
-            print("Dim of this parameter is %s and grad %s" % (str(p.shape), "is none" if is_none else "exists"))
 
+        torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
         for p in model.parameters():
             p.data.add_(-lr, p.grad.data)
 
