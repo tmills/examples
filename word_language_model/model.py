@@ -39,6 +39,7 @@ class RNNModel(nn.Module):
 
         self.init_weights()
 
+        # https://discuss.pytorch.org/t/how-do-i-check-the-number-of-parameters-of-a-model/4325/6
         trainable_parameters = filter(lambda p: p.requires_grad, self.parameters())
         num_params = sum([np.prod(p.size()) for p in trainable_parameters])
         print("Model initialized with %d trainable parameters" % (num_params))
