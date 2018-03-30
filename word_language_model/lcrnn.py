@@ -103,7 +103,7 @@ class LcRnnCell(nn.Module):
             j = torch.add(torch.zeros_like(f), f)
 
         ## Inputs only depend on previous time step's depth:
-        next_depth = torch.add(prev_depth, f.sub(j))
+        next_depth = torch.add(prev_depth, f.sub(j)).detach()
 
         next_a = [Variable(torch.zeros(batch_size, hidden_size).cuda())]
         next_b = [Variable(torch.zeros(batch_size, hidden_size).cuda())]
@@ -169,7 +169,7 @@ class LcRnn(nn.Module):
         #     raise NotImplementedError("This model only works with batch size 1 currently.")
         return (Variable(self.hidden_a_init.expand(batch_size, -1, -1)),
                     Variable(self.hidden_b_init.expand(batch_size, -1, -1)),
-                    Variable(LongTensor(batch_size,1).zero_().cuda()),
+                    Variable(LongTensor(batch_size,1).zero_().cuda(), requires_grad=False),
                     None)
 
     @staticmethod
@@ -178,7 +178,7 @@ class LcRnn(nn.Module):
         output = []
         for step in range(seq_len):
             a_next, b_next, depth_next, (f,j) = cell.forward(X[step], hx)
-            hx_next = (a_next, b_next, depth_next, None)
+            hx_next = (a_next, b_next, depth_next, (f,j))
             # Right now we take the highest depth as the output -- may eventually want to 
             # cat together hidden variables at all depth levels (see cta_layers option in contsructor)
             output.append(torch.cat((a_next[:,-1,:], b_next[:,-1,:]), 1))
@@ -203,10 +203,10 @@ class LcRnn(nn.Module):
             hx = hidden
 
         layer_output = None
-        layer_output, (last_a, last_b, last_depth, _) = LcRnn._forward_rnn(
+        layer_output, (last_a, last_b, last_depth, fj) = LcRnn._forward_rnn(
                 cell=self.cell, X=X, hx=hx)
 
-        return layer_output, (last_a, last_b)
+        return layer_output, (last_a, last_b, fj)
 
 def equals(variable, val):
     if not len(variable.shape) == 1 or not variable.shape[0] == 1:

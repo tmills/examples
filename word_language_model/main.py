@@ -8,6 +8,7 @@ from torch.autograd import Variable
 
 import data
 import model
+from data import batchify, get_batch
 
 parser = argparse.ArgumentParser(description='PyTorch Wikitext-2 RNN/LSTM Language Model')
 parser.add_argument('--prefix-len', type=int, default=3,
@@ -58,36 +59,7 @@ if torch.cuda.is_available():
 # Load data
 ###############################################################################
 
-corpus = data.Corpus(args.data)
-
-# Starting from sequential data, batchify arranges the dataset into columns.
-# For instance, with the alphabet as the sequence and batch size 4, we'd get
-# ┌ a g m s ┐
-# │ b h n t │
-# │ c i o u │
-# │ d j p v │
-# │ e k q w │
-# └ f l r x ┘.
-# These columns are treated as independent by the model, which means that the
-# dependence of e. g. 'g' on 'f' can not be learned, but allows more efficient
-# batch processing.
-
-def batchify(data, bsz):
-    # Work out how cleanly we can divide the dataset into bsz parts.
-    data_width = data.size(0) // (args.prefix_len * bsz)
-
-    # Trim off any extra elements that wouldn't cleanly fit (remainders).
-    data = data.narrow(0, 0, data_width * args.prefix_len * bsz)
-    if data.size(0) % args.prefix_len != 0:
-        print("Error: Data is not a multiple of 3")
-    if data.size(0) % bsz != 0:
-        print("Error: Data is not a multiple of batch size")
-
-    # Evenly divide the data across the bsz batches.
-    data = data.view(-1, 3).t().contiguous()
-    if args.cuda:
-        data = data.cuda()
-    return data
+corpus = data.Corpus(args.data, seq_len=args.prefix_len)
 
 eval_batch_size = 9  ## Must also be a multiple of 3
 train_data = batchify(corpus.train, args.batch_size)
@@ -115,25 +87,6 @@ def repackage_hidden(h):
         return Variable(h.data)
     else:
         return tuple(repackage_hidden(v) for v in h)
-
-
-# get_batch subdivides the source data into chunks of length args.bptt.
-# If source is equal to the example output of the batchify function, with
-# a bptt-limit of 2, we'd get the following two Variables for i = 0:
-# ┌ a g m s ┐ ┌ b h n t ┐
-# └ b h n t ┘ └ c i o u ┘
-# Note that despite the name of the function, the subdivison of data is not
-# done along the batch dimension (i.e. dimension 1), since that was handled
-# by the batchify function. The chunks are along dimension 0, corresponding
-# to the seq_len dimension in the LSTM.
-
-## Modified by TM to take the next seq_len-1 words and use it to predict the seq_len_th word
-def get_batch(source, i, bsz, evaluation=False):
-    seq_len = args.prefix_len # min(args.bptt, len(source) - 1 - i)
-    data = Variable(source[:seq_len-1,i:i+bsz], volatile=evaluation)
-    #target = Variable(source[i+1:i+1+seq_len].view(-1))
-    target = Variable(source[seq_len-1,i:i+bsz].view(-1))
-    return data, target
 
 
 def evaluate(data_source):
