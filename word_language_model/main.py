@@ -62,9 +62,9 @@ if torch.cuda.is_available():
 corpus = data.Corpus(args.data, seq_len=args.prefix_len)
 
 eval_batch_size = 9  ## Must also be a multiple of 3
-train_data = batchify(corpus.train, args.batch_size)
-val_data = batchify(corpus.valid, eval_batch_size)
-test_data = batchify(corpus.test, eval_batch_size)
+train_data = batchify(corpus.train, args.batch_size, args.prefix_len)
+val_data = batchify(corpus.valid, eval_batch_size, args.prefix_len)
+test_data = batchify(corpus.test, eval_batch_size, args.prefix_len)
 
 ###############################################################################
 # Build the model
@@ -96,7 +96,7 @@ def evaluate(data_source):
     ntokens = len(corpus.dictionary)
     for i in range(0, data_source.size(0) - 1, eval_batch_size):
         hidden = model.init_hidden(eval_batch_size)
-        data, targets = get_batch(data_source, i, eval_batch_size, evaluation=True)
+        data, targets = get_batch(data_source, i, eval_batch_size, prefix_len=args.prefix_len, evaluation=True)
         output, hidden = model(data, hidden)
         # output_flat = output[-1,:,:]
         total_loss += len(data) * criterion(output, targets).data
@@ -114,7 +114,7 @@ def train():
     # Instead of an argument for bptt, only use sequences of length 3, where the first
     # two words are input and the third is the target (get_batch() handles this).
     for batch, i in enumerate(range(0, train_data.size(1) - 1, args.batch_size)):
-        data, targets = get_batch(train_data, i, args.batch_size)
+        data, targets = get_batch(train_data, i, args.batch_size, prefix_len=args.prefix_len)
         # Starting each batch, we detach the hidden state from how it was previously produced.
         # If we didn't, the model would try backpropagating all the way to start of the dataset.
         # hidden = repackage_hidden(hidden)

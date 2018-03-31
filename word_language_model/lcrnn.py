@@ -149,7 +149,7 @@ class LcRnn(nn.Module):
         # we're splitting our hidden state into 2 so make sure it's even:
         if not hidden_size % 2 == 0:
             hidden_size += 1
-        self.hidden_size = hidden_size // 2
+        self.hidden_size = (hidden_size-2) // 2
         self.depth = num_layers
         self.hidden_a_init = FloatTensor(1, self.depth+1, self.hidden_size).zero_().cuda()
         self.hidden_b_init = FloatTensor(1, self.depth+1, self.hidden_size).zero_().cuda()
@@ -181,7 +181,7 @@ class LcRnn(nn.Module):
             hx_next = (a_next, b_next, depth_next, (f,j))
             # Right now we take the highest depth as the output -- may eventually want to 
             # cat together hidden variables at all depth levels (see cta_layers option in contsructor)
-            output.append(torch.cat((a_next[:,-1,:], b_next[:,-1,:]), 1))
+            output.append(torch.cat((a_next[:,-1,:], b_next[:,-1,:], f.float(), j.float()), 1))
             hx = hx_next
         output = torch.stack(output, 0)
         return output, hx

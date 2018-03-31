@@ -30,11 +30,13 @@ def main(args):
         sys.exit(-1)
     
     corpus = Corpus(args[1], seq_len=prefix_len)
+    d = corpus.dictionary.idx2word
     val_data = batchify(corpus.valid, 1, prefix_len=prefix_len)
     eval_batch_size = 1
 
     with open(args[0], 'rb') as f:
         model = torch.load(f)
+        model.parsing = True
    
     model.eval()
     ntypes = len(corpus.dictionary)
@@ -43,12 +45,12 @@ def main(args):
         hidden = model.init_hidden(eval_batch_size)
         data, targets = get_batch(val_data, i, eval_batch_size, prefix_len=prefix_len, evaluation=True)
         output, hidden = model(data, hidden)
-        d = corpus.dictionary.idx2word
         for ind in range(prefix_len):
-            if ind == prefix_len-1:
-                fj_str = "%d/%d" % (hidden[2][0].data.cpu().numpy()[0][0], hidden[2][1].data.cpu().numpy()[0][0])
-                sys.stdout.write('[%s] ' % (fj_str))
-            sys.stdout.write('%s ' % ( d[val_data[ind,i]] ) )
+            if ind+1 < prefix_len:
+                fj_str = "%d/%d" % (int(output[ind][-1][-2].data.cpu().numpy()[0]), int(output[ind][-1][-1].data.cpu().numpy()[0]))
+                sys.stdout.write('[%s] ' % (fj_str) )
+            sys.stdout.write('%s ' % (d[val_data[ind,i]]))
+            # sys.stdout.write('%s ' % (  ) )
 
             # print('%s %s [%s] %s' % (d[val_data[0,i]], d[val_data[1,i]], fj_str, d[val_data[2,i]] ))
         sys.stdout.write('\n')

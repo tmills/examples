@@ -39,7 +39,7 @@ def batchify(data, bsz, prefix_len):
 # by the batchify function. The chunks are along dimension 0, corresponding
 # to the seq_len dimension in the LSTM.
 ## Modified by TM to take the next seq_len-1 words and use it to predict the seq_len_th word
-def get_batch(source, i, bsz, prefix_len=3, evaluation=False):
+def get_batch(source, i, bsz, prefix_len, evaluation=False):
     data = Variable(source[:prefix_len-1,i:i+bsz], volatile=evaluation)
     target = Variable(source[prefix_len-1,i:i+bsz].view(-1))
     return data, target

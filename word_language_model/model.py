@@ -47,6 +47,7 @@ class RNNModel(nn.Module):
         self.rnn_type = rnn_type
         self.nhid = nhid
         self.nlayers = nlayers
+        self.parsing = False
 
     def init_weights(self):
         initrange = 0.1
@@ -58,8 +59,9 @@ class RNNModel(nn.Module):
         emb = self.drop(self.encoder(input))
         output, hidden = self.rnn(emb, hidden)
         output = self.drop(output)
-        decoded = self.decoder(output[-1])
-        return decoded, hidden
+        if not self.parsing:
+            output = self.decoder(output[-1])
+        return output, hidden
 
     def init_hidden(self, bsz):
         weight = next(self.parameters()).data
