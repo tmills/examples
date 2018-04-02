@@ -13,7 +13,7 @@ from torch.autograd import Variable
 # These columns are treated as independent by the model, which means that the
 # dependence of e. g. 'g' on 'f' can not be learned, but allows more efficient
 # batch processing.
-def batchify(data, bsz, prefix_len):
+def batchify(data, bsz, prefix_len, cuda=True):
     # Work out how cleanly we can divide the dataset into bsz parts.
     data_width = data.size(0) // (prefix_len * bsz)
 
@@ -26,7 +26,8 @@ def batchify(data, bsz, prefix_len):
 
     # Evenly divide the data across the bsz batches.
     data = data.view(-1, prefix_len).t().contiguous()
-    data = data.cuda()
+    if cuda:
+        data = data.cuda()
     return data
 
 # get_batch subdivides the source data into chunks of length args.bptt.
@@ -79,12 +80,11 @@ class Corpus(object):
         with open(path, 'r') as f:
             tokens = 0
             for line in f:
-                words = line.split()[:seq_len] #+ ['<eos>']
-                if len(words) != seq_len:
-                    # ignore lines (sentences) with < 3 tokens
-                    continue
+                words = line.split() #+ ['<eos>']
 
-                tokens += len(words)
+                if len(words) >= seq_len:
+                    tokens += seq_len
+
                 for word in words:
                     self.dictionary.add_word(word)
 

@@ -45,6 +45,9 @@ parser.add_argument('--log-interval', type=int, default=200, metavar='N',
                     help='report interval')
 parser.add_argument('--save', type=str,  default='model.pt',
                     help='path to save the final model')
+parser.add_argument('--load', type=str,  default=None,
+                    help='path to load pre-trained model')
+                    
 args = parser.parse_args()
 
 # Set the random seed manually for reproducibility.
@@ -62,16 +65,21 @@ if torch.cuda.is_available():
 corpus = data.Corpus(args.data, seq_len=args.prefix_len)
 
 eval_batch_size = 9  ## Must also be a multiple of 3
-train_data = batchify(corpus.train, args.batch_size, args.prefix_len)
-val_data = batchify(corpus.valid, eval_batch_size, args.prefix_len)
-test_data = batchify(corpus.test, eval_batch_size, args.prefix_len)
+train_data = batchify(corpus.train, args.batch_size, args.prefix_len, args.cuda)
+val_data = batchify(corpus.valid, eval_batch_size, args.prefix_len, args.cuda)
+test_data = batchify(corpus.test, eval_batch_size, args.prefix_len, args.cuda)
 
 ###############################################################################
 # Build the model
 ###############################################################################
 
 ntokens = len(corpus.dictionary)
-model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.tied)
+if args.load is None:
+    model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.tied)
+else:
+    with open(args.load, 'rb') as f:
+        model = torch.load(f)
+
 if args.cuda:
     model.cuda()
 
