@@ -3,18 +3,50 @@
 import torch
 from torch import nn, FloatTensor, ByteTensor, LongTensor
 from torch.nn.functional import sigmoid
-from torch.autograd import Variable
+from torch.autograd import Variable, Function
 
-class BinaryStochasticNeuron(nn.Linear):
-    def __init__(self, input_size):
-        super(BinaryStochasticNeuron,self).__init__(input_size, 1, bias=False)
-    
-    def forward(self,X):
-        return super(BinaryStochasticNeuron,self).forward(X)
-    
-    ## TOD: Implement backward and see if it's called
-    def backward(self):
-        return super(BinaryStochasticNeuron,self).backward()
+# From: https://github.com/Wizaron/binary-stochastic-neurons/blob/master/utils.py
+class RoundFunctionST(Function):
+    """Rounds a tensor whose values are in [0, 1] to a tensor with values in {0, 1}"""
+
+    @staticmethod
+    def forward(ctx, input):
+        """Forward pass
+        Parameters
+        ==========
+        :param input: input tensor
+        Returns
+        =======
+        :return: a tensor which is round(input)"""
+
+        # We can cache arbitrary Tensors for use in the backward pass using the
+        # save_for_backward method.
+        # ctx.save_for_backward(input)
+
+        return torch.round(input)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        """In the backward pass we receive a tensor containing the gradient of the
+        loss with respect to the output, and we need to compute the gradient of the
+        loss with respect to the input.
+        Parameters
+        ==========
+        :param grad_output: tensor that stores the gradients of the loss wrt. output
+        Returns
+        =======
+        :return: tensor that stores the gradients of the loss wrt. input"""
+
+        # This is a pattern that is very convenient - at the top of backward
+        # unpack saved_tensors and initialize all gradients w.r.t. inputs to
+        # None. Thanks to the fact that additional trailing Nones are
+        # ignored, the return statement is simple even when the function has
+        # optional inputs.
+        # input, weight, bias = ctx.saved_variables
+
+        return grad_output
+
+RoundST = RoundFunctionST.apply
 
 class LcRnnCell(nn.Module):
     def __init__(self, input_size, depth=1, hidden_size=100):
@@ -98,7 +130,8 @@ class LcRnnCell(nn.Module):
             f = Variable(torch.ones(batch_size,1).cuda().long())
             j = Variable(torch.zeros(batch_size,1).cuda().long())
         else:
-            f = torch.round(sigmoid(self.w_f(prev_b[batch_range,prev_depth[:,0],:]))).long()
+            # f = torch.round(sigmoid(self.w_f(prev_b[batch_range,prev_depth[:,0],:]))).long()
+            f = RoundST(sigmoid(self.w_f(prev_b[batch_range,prev_depth[:,0],:]))).long()
             ## For now ignore j weights, always do f=j
             j = torch.add(torch.zeros_like(f), f)
 

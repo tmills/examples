@@ -122,6 +122,7 @@ def train():
     # Instead of an argument for bptt, only use sequences of length 3, where the first
     # two words are input and the third is the target (get_batch() handles this).
     for batch, i in enumerate(range(0, train_data.size(1) - 1, args.batch_size)):
+        # print(model.rnn.cell.w_f.weight)
         data, targets = get_batch(train_data, i, args.batch_size, prefix_len=args.prefix_len)
         # Starting each batch, we detach the hidden state from how it was previously produced.
         # If we didn't, the model would try backpropagating all the way to start of the dataset.
@@ -132,7 +133,14 @@ def train():
         loss = criterion(output, targets)
         loss.backward()
 
+        # for w in range(len(data)):
+        #     print(corpus.dictionary.idx2word[data[w,:].cpu().data[0]])
+
+        # if epoch > 0:
         # for p in model.parameters():
+        #     print(p.grad)
+        #     break
+
         #     is_none = p.grad is None
         #     print("Dim of this parameter is %s and grad %s" % (str(p.shape), "is none" if is_none else "exists"))
         # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
@@ -160,6 +168,7 @@ best_val_loss = None
 # At any point you can hit Ctrl + C to break out of training early.
 try:
     for epoch in range(1, args.epochs+1):
+        print(model.rnn.cell.w_f.weight)
         epoch_start_time = time.time()
         train()
         val_loss = evaluate(val_data)
