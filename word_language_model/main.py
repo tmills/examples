@@ -140,14 +140,14 @@ def train():
         # for p in model.parameters():
         #     print(p.grad)
         #     break
-
         #     is_none = p.grad is None
         #     print("Dim of this parameter is %s and grad %s" % (str(p.shape), "is none" if is_none else "exists"))
-        # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
 
+        # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
         torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
         for p in model.parameters():
-            p.data.add_(-lr, p.grad.data)
+            if p.requires_grad:
+                p.data.add_(-lr, p.grad.data)
 
         total_loss += loss.data
 
@@ -168,7 +168,7 @@ best_val_loss = None
 # At any point you can hit Ctrl + C to break out of training early.
 try:
     for epoch in range(1, args.epochs+1):
-        print(model.rnn.cell.w_f.weight)
+        # print(model.rnn.cell.w_f.weight)
         epoch_start_time = time.time()
         train()
         val_loss = evaluate(val_data)

@@ -4,49 +4,7 @@ import torch
 from torch import nn, FloatTensor, ByteTensor, LongTensor
 from torch.nn.functional import sigmoid
 from torch.autograd import Variable, Function
-
-# From: https://github.com/Wizaron/binary-stochastic-neurons/blob/master/utils.py
-class RoundFunctionST(Function):
-    """Rounds a tensor whose values are in [0, 1] to a tensor with values in {0, 1}"""
-
-    @staticmethod
-    def forward(ctx, input):
-        """Forward pass
-        Parameters
-        ==========
-        :param input: input tensor
-        Returns
-        =======
-        :return: a tensor which is round(input)"""
-
-        # We can cache arbitrary Tensors for use in the backward pass using the
-        # save_for_backward method.
-        # ctx.save_for_backward(input)
-
-        return torch.round(input)
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        """In the backward pass we receive a tensor containing the gradient of the
-        loss with respect to the output, and we need to compute the gradient of the
-        loss with respect to the input.
-        Parameters
-        ==========
-        :param grad_output: tensor that stores the gradients of the loss wrt. output
-        Returns
-        =======
-        :return: tensor that stores the gradients of the loss wrt. input"""
-
-        # This is a pattern that is very convenient - at the top of backward
-        # unpack saved_tensors and initialize all gradients w.r.t. inputs to
-        # None. Thanks to the fact that additional trailing Nones are
-        # ignored, the return statement is simple even when the function has
-        # optional inputs.
-        # input, weight, bias = ctx.saved_variables
-
-        return grad_output
-
-RoundST = RoundFunctionST.apply
+import numpy as np
 
 class LcRnnCell(nn.Module):
     def __init__(self, input_size, depth=1, hidden_size=100):
@@ -58,25 +16,15 @@ class LcRnnCell(nn.Module):
         self.depth = depth
         self.embed_size = input_size
         self.hidden_size = hidden_size
-
-        ## Internal state has a value for f, j, vectors for a and b
-        # self.internal_state_size = 2 + 2 * self.hidden_size
-
-        ## f is dependent on b^d_t-1
-        ## in 1 layer model, this is the last hidden_size values in the hidden state
-        self.w_f = nn.Linear(self.hidden_size, 1, bias=False)
-        ## if f is 0, j is dependent on a^d_t-1 and b^{d-1}_{t-1}, a from prev
-        ## time step at this depth, and b at prev time step at higher depth
-        # self.w_j0 = nn.Linear(self.hidden_size*2, 1, bias=False)
-        ## if f is 1, j is dependent on b^d_{t-1}, b from prev time 
-        ## step and same depth
-        # self.w_j1 = nn.Linear(self.hidden_size, 1, bias=False)
+        # 2 hidden variables, 4 possibile outcomes
+        self.depth_size = 2 * 4 * self.hidden_size
+        self.stride = 2*self.hidden_size*(self.depth+1)
 
         ## A given 00 (Shain et al.)
         ## P θ A (a_t | b^{d-1}_t−1 a^d_t−1 )
         ## Ignore b^{d-1} for now
         ## Plus the word (new)
-        self.w_a00 = nn.Linear(self.embed_size + self.hidden_size, self.hidden_size, bias=False)
+        self.w_a00 = nn.Linear(self.embed_size + self.hidden_size * 2, self.hidden_size, bias=False)
 
         ## A given 10:
         ## P θ (a^d+1 | b^d_{t-1} p_t )
@@ -102,20 +50,38 @@ class LcRnnCell(nn.Module):
         ## Use word instead of POS and a that was just gneerated
         self.w_b10 = nn.Linear(self.embed_size + self.hidden_size, self.hidden_size, bias=False)
 
+        # B given 01 (ibid)
+        ## P θ B (b^{d−1}_t | b^{d-1}_{t−1} a^d_{t−1})
+        self.w_b01 = nn.Linear(self.embed_size + self.hidden_size * 2, self.hidden_size, bias=False)
+
+        # Attention model: Given all a/b parameters: a/b (*2), each depth (+1 for zero depth), for 
+        # all possible f/j configurations at each time step (*4)
+        # And predict a 4-way probability distribution over f/j configs:
+        self.attention = nn.Linear(self.depth_size * self.depth, 4, bias=False)
+
+        # A few static matrices that we use to map from our attention states to
+        # a mask that will select out the hidden state for the highest probability
+        # state.
+        self.selection_striper = nn.Parameter(torch.zeros(4, 4*self.stride), requires_grad=False)
+        self.selection_striper[0, :self.stride] = 1
+        self.selection_striper[1, self.stride:2*self.stride] = 1
+        self.selection_striper[2, 2*self.stride:3*self.stride] = 1
+        self.selection_striper[3, 3*self.stride:] = 1
+
+        self.stripe_expander = nn.Parameter(torch.cat( (torch.eye(self.stride), torch.eye(self.stride), torch.eye(self.stride), torch.eye(self.stride)), 0), requires_grad=False)
+
         self.reset_parameters()
 
     def reset_parameters(self):
         """
         Initialize parameters
         """
-        self.w_f.reset_parameters()
-        # self.w_j0.reset_parameters()
-        # self.w_j1.reset_parameters()
         self.w_a00.reset_parameters()
         self.w_a10.reset_parameters()
         self.w_b00.reset_parameters()
         self.w_b11.reset_parameters()
         self.w_b10.reset_parameters()
+        self.w_b01.reset_parameters()
 
 
     def forward(self, X, hidden=None):
@@ -126,51 +92,144 @@ class LcRnnCell(nn.Module):
 
         batch_range = range(batch_size)
 
-        if (prev_depth==0).all():
-            f = Variable(torch.ones(batch_size,1).cuda().long())
-            j = Variable(torch.zeros(batch_size,1).cuda().long())
-        else:
-            # f = torch.round(sigmoid(self.w_f(prev_b[batch_range,prev_depth[:,0],:]))).long()
-            f = RoundST(sigmoid(self.w_f(prev_b[batch_range,prev_depth[:,0],:]))).long()
-            ## For now ignore j weights, always do f=j
-            j = torch.add(torch.zeros_like(f), f)
+        # Depth "0" is initialized to 0 (needed for conditioning of depth 1)
+        ab_00 = [ Variable(torch.zeros(batch_size, 2*hidden_size).cuda()) ]
+        ab_01 = [ Variable(torch.zeros(batch_size, 2*hidden_size).cuda()) ]
+        ab_10 = [ Variable(torch.zeros(batch_size, 2*hidden_size).cuda()) ]
+        ab_11 = [ Variable(torch.zeros(batch_size, 2*hidden_size).cuda()) ]
 
-        ## Inputs only depend on previous time step's depth:
-        next_depth = torch.add(prev_depth, f.sub(j)).detach()
-
-        next_a = [Variable(torch.zeros(batch_size, hidden_size).cuda())]
-        next_b = [Variable(torch.zeros(batch_size, hidden_size).cuda())]
         for d in range(1, self.depth+1):
             fork_join_a = prev_a[:,d,:]
-            nofork_nojoin_a = self.w_a00(torch.cat( (X, prev_a[:,d,:]), 1))
+            nofork_nojoin_a = self.w_a00(torch.cat( (X, prev_b[:,d-1,:], prev_a[:,d,:]), 1))
             fork_nojoin_a = self.w_a10(torch.cat( (X, prev_b[:,d-1,:]), 1))
+            nofork_join_a = prev_a[:,d-1,:]
 
             ## At next depth, need to update a and/or b
-            next_a_d = (torch.eq(next_depth, float(d)).float() *
-                            ( ( (f * j).float() * fork_join_a ) +       # f=j=1
-                              ( (1-f) * (1-j) ).float() * nofork_nojoin_a +
-                              ( (f * (1-j)).float() * fork_nojoin_a)) #f=j=0
+            next_a_d_00 = (torch.eq(prev_depth, float(d)).float() * nofork_nojoin_a
                         +    # at shallower depth, copy over
-                        torch.lt(next_depth, float(d)).float() * prev_a[:,d,:]
+                        torch.gt(prev_depth, float(d)).float() * prev_a[:,d,:]
                         +    # at deeper depth, zero out
-                        torch.gt(next_depth, float(d)).float() * torch.zeros_like(prev_a[:,d,:]))
+                        torch.lt(prev_depth, float(d)).float() * torch.zeros_like(prev_a[:,d,:]))
             
-            fork_join_b = self.w_b11( torch.cat( ( X, prev_b[:,d,:]), 1) )
-            nofork_nojoin_b = self.w_b00( torch.cat( (X, prev_a[:,d,:], next_a_d), 1))
-            fork_nojoin_b = self.w_b10( torch.cat( (X, next_a_d), 1)) 
-            next_b_d = (torch.eq(next_depth, float(d)).float() *
-                            ( ( (f * j).float() * fork_join_b) +
-                              ( (1-f) * (1-j) ).float() * nofork_nojoin_b +
-                              ( (f * (1-j)).float() * fork_nojoin_b))
-                        + # At shallower depth, copy over
-                        torch.lt(next_depth, float(d)).float() * prev_b[:,d,:]
-                        +   # at deeper depth, zero out
-                        torch.gt(next_depth, float(d)).float() * torch.zeros_like(prev_a[:,d,:]))
+            next_a_d_11 = (torch.eq(prev_depth, float(d)).float() * fork_join_a
+                        +    # at shallower depth, copy over
+                        torch.gt(prev_depth, float(d)).float() * prev_a[:,d,:]
+                        +    # at deeper depth, zero out
+                        torch.lt(prev_depth, float(d)).float() * torch.zeros_like(prev_a[:,d,:]))
 
-            next_a.append(next_a_d)
-            next_b.append(next_b_d)
-               
-        return torch.stack(next_a, 1), torch.stack(next_b, 1), next_depth, (f, j)
+            next_a_d_10 = (torch.eq(prev_depth+1, float(d)).float() * fork_nojoin_a
+                        +    # at shallower depth, copy over
+                        torch.gt(prev_depth+1, float(d)).float() * prev_a[:,d,:]
+                        +    # at deeper depth, zero out
+                        torch.lt(prev_depth+1, float(d)).float() * torch.zeros_like(prev_a[:,d,:]))
+
+            next_a_d_01 = (torch.eq(prev_depth-1, float(d)).float() * nofork_join_a
+                        +    # at shallower depth, copy over
+                        torch.gt(prev_depth-1, float(d)).float() * prev_a[:,d,:]
+                        +    # at deeper depth, zero out
+                        torch.lt(prev_depth-1, float(d)).float() * torch.zeros_like(prev_a[:,d,:]))
+            
+
+            fork_join_b = self.w_b11( torch.cat( ( X, prev_b[:,d,:]), 1) )
+            nofork_nojoin_b = self.w_b00( torch.cat( (X, prev_a[:,d,:], next_a_d_00), 1))
+            fork_nojoin_b = self.w_b10( torch.cat( (X, next_a_d_10), 1))
+            nofork_join_b = self.w_b01( torch.cat( (X, prev_b[:,d-1,:], prev_a[:,d,:]), 1))
+
+            next_b_d_00 = (torch.eq(prev_depth, float(d)).float() * nofork_nojoin_b
+                        +    # at shallower depth, copy over
+                        torch.gt(prev_depth, float(d)).float() * prev_b[:,d,:]
+                        +    # at deeper depth, zero out
+                        torch.lt(prev_depth, float(d)).float() * torch.zeros_like(prev_b[:,d,:]))
+            next_b_d_11 = (torch.eq(prev_depth, float(d)).float() * fork_join_b
+                        +    # at shallower depth, copy over
+                        torch.gt(prev_depth, float(d)).float() * prev_b[:,d,:]
+                        +    # at deeper depth, zero out
+                        torch.lt(prev_depth, float(d)).float() * torch.zeros_like(prev_b[:,d,:]))
+            next_b_d_10 = (torch.eq(prev_depth+1, float(d)).float() * fork_nojoin_b
+                        +    # at shallower depth, copy over
+                        torch.gt(prev_depth+1, float(d)).float() * prev_b[:,d,:]
+                        +    # at deeper depth, zero out
+                        torch.lt(prev_depth+1, float(d)).float() * torch.zeros_like(prev_b[:,d,:]))
+            next_b_d_01 = (torch.eq(prev_depth-1, float(d)).float() * nofork_join_b
+                        +    # at shallower depth, copy over
+                        torch.gt(prev_depth-1, float(d)).float() * prev_b[:,d,:]
+                        +    # at deeper depth, zero out
+                        torch.lt(prev_depth-1, float(d)).float() * torch.zeros_like(prev_b[:,d,:]))
+
+            next_ab_00 = torch.cat( (next_a_d_00, next_b_d_00), 1)
+            next_ab_01 = torch.cat( (next_a_d_01, next_b_d_01), 1)
+            next_ab_10 = torch.cat( (next_a_d_10, next_b_d_10), 1)
+            next_ab_11 = torch.cat( (next_a_d_11, next_b_d_11), 1)
+
+            ab_00.append(next_ab_00)
+            ab_01.append(next_ab_01)
+            ab_10.append(next_ab_10)
+            ab_11.append(next_ab_11)
+            
+        
+        # Now flatten the depth and predict the attention variables:
+        # next_state_flat = torch.squeeze( next_state.view(batch_size, 1, -1) )
+        ab_00_flat = torch.stack(ab_00, 1).view(batch_size, 1, -1)
+        ab_01_flat = torch.stack(ab_01, 1).view(batch_size, 1, -1)
+        ab_10_flat = torch.stack(ab_10, 1).view(batch_size, 1, -1)
+        ab_11_flat = torch.stack(ab_11, 1).view(batch_size, 1, -1)
+
+        next_state_flat = torch.squeeze( torch.cat( (ab_00_flat, ab_01_flat, ab_10_flat, ab_11_flat),  2) )
+
+        # At time 0, and only at time 0, prev_Depth is 0, so we must choose 1/0
+        mask = Variable(torch.ones(batch_size, 4).cuda())
+        # if we're at depth 0, we can only allow 1/0
+        mask[:, (0,1,3)] *= (1-torch.eq(prev_depth,0).float())
+        # if we're at depth d, we cannot allow 1/0
+        mask[:, (2,)] *= (1 - torch.eq(prev_depth, self.depth).float())
+
+        att_vars = (mask * 
+                    torch.nn.functional.softmax( self.attention( next_state_flat[:, self.depth_size:] ) ) )
+
+        selection = torch.sign(att_vars - torch.unsqueeze(att_vars.max(1)[0],1) * Variable(torch.ones(1,4).cuda()) + np.finfo(np.double).tiny) + 1
+        # Make sure this computation works without fail:
+        assert selection.sum().data.cpu().numpy()[0] == selection.shape[0]
+        # selection = Variable(torch.zeros( batch_size, 4, 1).cuda())
+        # selection[ range(batch_size), MaxST(att_vars).data, : ] = 1
+        # selection[ range(batch_size), torch.max(att_vars), : ] = 1
+
+        striped = torch.mm(selection, self.selection_striper)
+        ## It's ok up to here. Now we need to broadcast a dot product for each
+        ## stripe across the stacked identity matrix to mask out the unwanted
+        ## parts of the state space
+
+        mask_list = []
+        for b in range(batch_size):
+            batch_mask = []
+            for ind in range(self.stride):
+                batch_mask.append(striped[b] * self.stripe_expander[:,ind])
+            mask_list.append( torch.stack(batch_mask, 1) )
+        striped_identity = torch.stack(mask_list, 0)
+
+        # It's ok below here. 
+        hidden = torch.squeeze(torch.bmm(torch.unsqueeze(next_state_flat,1), striped_identity))
+        # hidden = torch.mm(striped, masked_)
+
+        # stride = (self.depth+1) * self.hidden_size * 2
+        # hidden = (selection[:,0] * next_state_flat[:, :stride] 
+        #          + selection[:,1] * next_state_flat[:, stride:stride*2]
+        #          + selection[:,2] * next_state_flat[:, stride*2:stride*3]
+        #          + selection[:,3] * next_state_flat[:, stride*3:stride*4])
+        
+        # now hidden needs to be re-viewed as batch x depth x hidden
+        hidden = hidden.view(batch_size, self.depth+1, self.hidden_size * 2)
+        next_a = hidden[:,:, :self.hidden_size]
+        next_b = hidden[:,:, self.hidden_size:]                 
+
+        # compute the selected next depth and equivalent f/j variables from the selection:
+        next_depth = torch.unsqueeze( (selection[:,0].long() * prev_depth[:,0]
+                     + selection[:,1].long() * (prev_depth[:,0]-1)
+                     + selection[:,2].long() * (prev_depth[:,0]+1)
+                     + selection[:,3].long() * prev_depth[:,0]), 1)
+        f = torch.unsqueeze( (selection[:,2] * 1 + selection[:,3] * 1), 1)
+        j = torch.unsqueeze( (selection[:,1] * 1 + selection[:,3] * 1), 1)
+
+        return next_a, next_b, next_depth, (f, j)
         
 
 class LcRnn(nn.Module):
