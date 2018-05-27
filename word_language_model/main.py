@@ -158,6 +158,7 @@ def train():
                     'loss {:5.2f} | ppl {:8.2f}'.format(
                 epoch, batch, len(train_data) // args.prefix_len, lr,
                 elapsed * 1000 / args.log_interval, cur_loss, math.exp(cur_loss)))
+            model.update_callback(epoch, batch)
             total_loss = 0
             start_time = time.time()
 

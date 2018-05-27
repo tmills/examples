@@ -5,6 +5,52 @@ from torch import nn, FloatTensor, ByteTensor, LongTensor
 from torch.nn.functional import sigmoid
 from torch.autograd import Variable, Function
 import numpy as np
+import time
+
+class ArgmaxFunctionST(Function):
+    """Rounds a tensor whose values are in [0, 1] to a tensor with values in {0, 1}"""
+
+    @staticmethod
+    def forward(ctx, input):
+        """Forward pass
+        Parameters
+        ==========
+        :param input: input tensor
+        Returns
+        =======
+        :return: a one-hot tensor with 1 indicating the max of that input vector"""
+
+        # We can cache arbitrary Tensors for use in the backward pass using the
+        # save_for_backward method.
+        # ctx.save_for_backward(input)
+        batch_size = input.shape[0]
+        maxes = torch.max(input,1)[1]
+        out = torch.zeros_like(input)
+        out[range(batch_size), maxes] = 1
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        """In the backward pass we receive a tensor containing the gradient of the
+        loss with respect to the output, and we need to compute the gradient of the
+        loss with respect to the input.
+        Parameters
+        ==========
+        :param grad_output: tensor that stores the gradients of the loss wrt. output
+        Returns
+        =======
+        :return: tensor that stores the gradients of the loss wrt. input"""
+
+        # This is a pattern that is very convenient - at the top of backward
+        # unpack saved_tensors and initialize all gradients w.r.t. inputs to
+        # None. Thanks to the fact that additional trailing Nones are
+        # ignored, the return statement is simple even when the function has
+        # optional inputs.
+        # input, weight, bias = ctx.saved_variables
+
+        return grad_output
+
+ArgmaxST = ArgmaxFunctionST.apply
 
 class LcRnnCell(nn.Module):
     def __init__(self, input_size, depth=1, hidden_size=100):
@@ -70,6 +116,8 @@ class LcRnnCell(nn.Module):
 
         self.stripe_expander = nn.Parameter(torch.cat( (torch.eye(self.stride), torch.eye(self.stride), torch.eye(self.stride), torch.eye(self.stride)), 0), requires_grad=False)
 
+        self.batch_mask_time = self.mask_time = self.finish_time = self.state_compute = 0
+
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -97,6 +145,8 @@ class LcRnnCell(nn.Module):
         ab_01 = [ Variable(torch.zeros(batch_size, 2*hidden_size).cuda()) ]
         ab_10 = [ Variable(torch.zeros(batch_size, 2*hidden_size).cuda()) ]
         ab_11 = [ Variable(torch.zeros(batch_size, 2*hidden_size).cuda()) ]
+
+        sect_start = time.time()
 
         for d in range(1, self.depth+1):
             fork_join_a = prev_a[:,d,:]
@@ -166,7 +216,10 @@ class LcRnnCell(nn.Module):
             ab_10.append(next_ab_10)
             ab_11.append(next_ab_11)
             
-        
+        sect_end = time.time()
+        self.state_compute += (sect_end - sect_start)
+
+        sect_start = time.time()
         # Now flatten the depth and predict the attention variables:
         # next_state_flat = torch.squeeze( next_state.view(batch_size, 1, -1) )
         ab_00_flat = torch.stack(ab_00, 1).view(batch_size, 1, -1)
@@ -174,8 +227,9 @@ class LcRnnCell(nn.Module):
         ab_10_flat = torch.stack(ab_10, 1).view(batch_size, 1, -1)
         ab_11_flat = torch.stack(ab_11, 1).view(batch_size, 1, -1)
 
-        next_state_flat = torch.squeeze( torch.cat( (ab_00_flat, ab_01_flat, ab_10_flat, ab_11_flat),  2) )
+        next_state_flat = torch.squeeze( torch.cat( (ab_00_flat, ab_01_flat, ab_10_flat, ab_11_flat),  2), 1 )
 
+        ## These are our deterministic masks: (Dis)Allow certain states at start, end, and depth limits
         # At time 0, and only at time 0, prev_Depth is 0, so we must choose 1/0
         mask = Variable(torch.ones(batch_size, 4).cuda())
         # if we're at depth 0, we can only allow 1/0
@@ -183,38 +237,35 @@ class LcRnnCell(nn.Module):
         # if we're at depth d, we cannot allow 1/0
         mask[:, (2,)] *= (1 - torch.eq(prev_depth, self.depth).float())
 
-        att_vars = (mask * 
-                    torch.nn.functional.softmax( self.attention( next_state_flat[:, self.depth_size:] ) ) )
+        # Get the attention variables
+        att_vars = mask * torch.nn.functional.softmax( torch.sigmoid(self.attention( next_state_flat[:, self.depth_size:] ) ) )
 
-        selection = torch.sign(att_vars - torch.unsqueeze(att_vars.max(1)[0],1) * Variable(torch.ones(1,4).cuda()) + np.finfo(np.double).tiny) + 1
-        # Make sure this computation works without fail:
-        assert selection.sum().data.cpu().numpy()[0] == selection.shape[0]
-        # selection = Variable(torch.zeros( batch_size, 4, 1).cuda())
-        # selection[ range(batch_size), MaxST(att_vars).data, : ] = 1
-        # selection[ range(batch_size), torch.max(att_vars), : ] = 1
+        selection = ArgmaxST(att_vars)
 
+        sect_end = time.time()
+        self.mask_time += (sect_end - sect_start)
+
+        sect_start = time.time()
         striped = torch.mm(selection, self.selection_striper)
+
         ## It's ok up to here. Now we need to broadcast a dot product for each
         ## stripe across the stacked identity matrix to mask out the unwanted
         ## parts of the state space
-
         mask_list = []
         for b in range(batch_size):
             batch_mask = []
-            for ind in range(self.stride):
-                batch_mask.append(striped[b] * self.stripe_expander[:,ind])
-            mask_list.append( torch.stack(batch_mask, 1) )
+            expanded_stripe = striped[b].repeat(self.stride,1)
+            batch_mask = expanded_stripe * self.stripe_expander.t()
+            mask_list.append( batch_mask.t() )
         striped_identity = torch.stack(mask_list, 0)
+
+        sect_end = time.time()
+        self.batch_mask_time += (sect_end - sect_start)
+
+        sect_start = time.time()
 
         # It's ok below here. 
         hidden = torch.squeeze(torch.bmm(torch.unsqueeze(next_state_flat,1), striped_identity))
-        # hidden = torch.mm(striped, masked_)
-
-        # stride = (self.depth+1) * self.hidden_size * 2
-        # hidden = (selection[:,0] * next_state_flat[:, :stride] 
-        #          + selection[:,1] * next_state_flat[:, stride:stride*2]
-        #          + selection[:,2] * next_state_flat[:, stride*2:stride*3]
-        #          + selection[:,3] * next_state_flat[:, stride*3:stride*4])
         
         # now hidden needs to be re-viewed as batch x depth x hidden
         hidden = hidden.view(batch_size, self.depth+1, self.hidden_size * 2)
@@ -228,6 +279,9 @@ class LcRnnCell(nn.Module):
                      + selection[:,3].long() * prev_depth[:,0]), 1)
         f = torch.unsqueeze( (selection[:,2] * 1 + selection[:,3] * 1), 1)
         j = torch.unsqueeze( (selection[:,1] * 1 + selection[:,3] * 1), 1)
+
+        sect_end = time.time()
+        self.finish_time += (sect_end - sect_start)
 
         return next_a, next_b, next_depth, (f, j)
         
@@ -299,6 +353,9 @@ class LcRnn(nn.Module):
                 cell=self.cell, X=X, hx=hx)
 
         return layer_output, (last_a, last_b, fj)
+
+    def update_callback(self, epoch, batch):
+        print("Compute time=%f, mask time=%f, batch mask time=%f, finish time=%f" % (self.cell.state_compute, self.cell.mask_time, self.cell.batch_mask_time, self.cell.finish_time))
 
 def equals(variable, val):
     if not len(variable.shape) == 1 or not variable.shape[0] == 1:

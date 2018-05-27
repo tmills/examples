@@ -72,3 +72,10 @@ class RNNModel(nn.Module):
             return self.rnn.init_hidden(bsz)
         else:
             return Variable(weight.new(self.nlayers, bsz, self.nhid).zero_())
+
+    def update_callback(self, epochs, batch):
+        try:
+            self.rnn.update_callback(epochs, batch)
+        except:
+            # Do nothing
+            pass
