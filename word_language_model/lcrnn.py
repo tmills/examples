@@ -294,8 +294,8 @@ class LcRnn(nn.Module):
         self.embed_size = input_size
         # we're splitting our hidden state into 2 so make sure it's even:
         if not hidden_size % 2 == 0:
-            hidden_size += 1
-        self.hidden_size = (hidden_size-2) // 2
+            raise Exception("NLC Model requires hidden size to be a multiple of 2")
+        self.hidden_size = (hidden_size) // 2
         self.depth = num_layers
         self.hidden_a_init = FloatTensor(1, self.depth+1, self.hidden_size).zero_().cuda()
         self.hidden_b_init = FloatTensor(1, self.depth+1, self.hidden_size).zero_().cuda()

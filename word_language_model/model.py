@@ -60,7 +60,7 @@ class RNNModel(nn.Module):
         output, hidden = self.rnn(emb, hidden)
         output = self.drop(output)
         if not self.parsing:
-            output = self.decoder(output[-1])
+            output = self.decoder(output[-1,:,:self.nhid])
         return output, hidden
 
     def init_hidden(self, bsz):

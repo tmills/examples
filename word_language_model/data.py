@@ -45,6 +45,30 @@ def get_batch(source, i, bsz, prefix_len, evaluation=False):
     target = Variable(source[prefix_len-1,i:i+bsz].view(-1))
     return data, target
 
+# We need the corpus (its mappings specifically) to do any new parsing, but
+# sometimes we want to use our model to parse a file outside our original corpus.
+# This function reads a file formatted like our corpus, and converts it into
+# a 'dataset' object like the corpus.{train|valid|test} objects.
+def read_file_outside_corpus(fn, corpus):
+    with open(fn, 'r') as f:
+        sents = []
+        for line in f:
+            words = line.split()
+            ids = torch.LongTensor(len(words),1)
+            
+            token = 0
+            for word in words:
+                if word not in corpus.dictionary.word2idx:
+                    ids[token,0] = corpus.dictionary.word2idx['unk']
+                else:
+                    ids[token,0] = corpus.dictionary.word2idx[word]
+                token += 1
+
+            sents.append(ids)
+
+    return sents
+
+
 # def get_batch(source, i, bsz, evaluation=False):
 #     seq_len = args.prefix_len # min(args.bptt, len(source) - 1 - i)
 #     data = Variable(source[:seq_len-1,i:i+bsz], volatile=evaluation)
