@@ -13,7 +13,7 @@ class RNNModel(nn.Module):
         if rnn_type in ['LSTM', 'GRU']:
             self.rnn = getattr(nn, rnn_type)(ninp, nhid, nlayers, dropout=dropout)
         elif rnn_type=='NLC':
-            self.rnn =  LcRnn(ninp, num_layers=nlayers, hidden_size=nhid)
+            self.rnn = LcRnn(ninp, num_layers=nlayers, hidden_size=nhid)
         elif rnn_type=='SRNN':
             self.rnn = StochasticRnn(ninp, num_layers=nlayers, hidden_size=nhid)
         else:
@@ -60,7 +60,8 @@ class RNNModel(nn.Module):
         output, hidden = self.rnn(emb, hidden)
         output = self.drop(output)
         if not self.parsing:
-            output = self.decoder(output[-1,:,:self.nhid])
+            output = self.decoder(output[:,:,:self.nhid])
+            # output = self.decoder(output.permute(1,0,2)[:,:,:self.nhid])
         return output, hidden
 
     def init_hidden(self, bsz):

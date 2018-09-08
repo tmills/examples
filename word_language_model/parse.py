@@ -16,7 +16,7 @@ def main(args):
                         help='Saved model file to use for parsing')
     parser.add_argument('--cuda', action='store_true',
                         help='use CUDA')
-    parser.add_argument('--test', action='store_true', help="Parse the test set (system parses                          validation set by default")
+    parser.add_argument('--test', action='store_true', help="Parse the test set (system parses                          validation set by default)")
     parser.add_argument('--input', type=str, required=False,
                         help='If this argument is provided, the script will parse the file argument rather than the dev directory of the data argument.')
 
@@ -24,7 +24,7 @@ def main(args):
 
     eval_batch_size = 1
 
-    corpus = Corpus(args.data, seq_len=args.prefix_len)
+    corpus = Corpus(args.data, max_seq_len=args.prefix_len)
     d = corpus.dictionary.idx2word
 
     if args.input is None:
@@ -35,7 +35,7 @@ def main(args):
     else:
         input_file = args.input
 
-    val_data = read_file_outside_corpus(input_file, corpus)
+    val_data, val_sents = read_file_outside_corpus(input_file, corpus)
 
     with open(args.model, 'rb') as f:
         model = torch.load(f)
@@ -57,10 +57,10 @@ def main(args):
             for ind in range(len(data)):
                 fj_str = "%d/%d" % (int(output[ind][batch_ind][-2].data.cpu().numpy()[0]), int(output[ind][batch_ind][-1].data.cpu().numpy()[0]))
                 sys.stdout.write('[%s] ' % (fj_str) )
-                sys.stdout.write('%s ' % (d[val_data[i][ind].numpy()[0]]))
+                sys.stdout.write('%s ' % (val_sents[i][ind]))
             sys.stdout.write('\n')
 
-    print("Done parsing")
+    sys.stderr.write("Done parsing\n")
 
     
 if __name__ == '__main__':

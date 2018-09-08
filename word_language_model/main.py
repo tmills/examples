@@ -1,14 +1,18 @@
+#!/usr/bin/env python
 # coding: utf-8
 import argparse
 import time
 import math
+import random
+
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
+import torch.optim as optim
 
 import data
 import model
-from data import batchify, get_batch
+from data import batchify, get_batch, add_unk
 
 parser = argparse.ArgumentParser(description='PyTorch Wikitext-2 RNN/LSTM Language Model')
 parser.add_argument('--prefix-len', type=int, default=3,
@@ -23,8 +27,8 @@ parser.add_argument('--nhid', type=int, default=200,
                     help='number of hidden units per layer')
 parser.add_argument('--nlayers', type=int, default=2,
                     help='number of layers')
-parser.add_argument('--lr', type=float, default=20,
-                    help='initial learning rate')
+# parser.add_argument('--lr', type=float, default=20,
+#                     help='initial learning rate')
 parser.add_argument('--clip', type=float, default=0.25,
                     help='gradient clipping')
 parser.add_argument('--epochs', type=int, default=40,
@@ -47,6 +51,8 @@ parser.add_argument('--save', type=str,  default='model.pt',
                     help='path to save the final model')
 parser.add_argument('--load', type=str,  default=None,
                     help='path to load pre-trained model')
+parser.add_argument('--unk', action="store_true",
+                    help='Replace rare words with \'unk\' randomly to train an unknown word embedding')
                     
 args = parser.parse_args()
 
@@ -62,12 +68,12 @@ if torch.cuda.is_available():
 # Load data
 ###############################################################################
 
-corpus = data.Corpus(args.data, seq_len=args.prefix_len)
+corpus = data.Corpus(args.data, max_seq_len=args.prefix_len)
 
-eval_batch_size = 9  ## Must also be a multiple of 3
-train_data = batchify(corpus.train, args.batch_size, args.prefix_len, args.cuda)
-val_data = batchify(corpus.valid, eval_batch_size, args.prefix_len, args.cuda)
-test_data = batchify(corpus.test, eval_batch_size, args.prefix_len, args.cuda)
+eval_batch_size = 10
+train_data = batchify(corpus.train, args.batch_size, args.cuda)
+val_data = batchify(corpus.valid, eval_batch_size, args.cuda)
+test_data = batchify(corpus.test, eval_batch_size, args.cuda)
 
 ###############################################################################
 # Build the model
@@ -84,6 +90,7 @@ if args.cuda:
     model.cuda()
 
 criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(filter(lambda p: p.requires_grad,model.parameters()))
 
 ###############################################################################
 # Training code
@@ -102,13 +109,16 @@ def evaluate(data_source):
     model.eval()
     total_loss = 0
     ntokens = len(corpus.dictionary)
-    for i in range(0, data_source.size(0) - 1, eval_batch_size):
-        hidden = model.init_hidden(eval_batch_size)
-        data, targets = get_batch(data_source, i, eval_batch_size, prefix_len=args.prefix_len, evaluation=True)
-        output, hidden = model(data, hidden)
-        # output_flat = output[-1,:,:]
-        total_loss += len(data) * criterion(output, targets).data
-        # hidden = repackage_hidden(hidden)
+    for sent_len in data_source.keys():
+        for i in range(0, data_source[sent_len].size(0)):
+            hidden = model.init_hidden(eval_batch_size)
+            data, targets = get_batch(data_source[sent_len], i, eval_batch_size, prefix_len=sent_len-1, evaluation=True)
+            targets.contiguous()
+            output, hidden = model(data, hidden)
+            # output_flat = output[-1,:,:]
+            flat_dim = (sent_len-1) * eval_batch_size
+            total_loss += len(data) * criterion(output.view(flat_dim,-1), targets.view(flat_dim)).data
+            # hidden = repackage_hidden(hidden)
     return total_loss[0] / len(data_source)
 
 
@@ -121,49 +131,44 @@ def train():
     
     # Instead of an argument for bptt, only use sequences of length 3, where the first
     # two words are input and the third is the target (get_batch() handles this).
-    for batch, i in enumerate(range(0, train_data.size(1) - 1, args.batch_size)):
-        # print(model.rnn.cell.w_f.weight)
-        data, targets = get_batch(train_data, i, args.batch_size, prefix_len=args.prefix_len)
-        # Starting each batch, we detach the hidden state from how it was previously produced.
-        # If we didn't, the model would try backpropagating all the way to start of the dataset.
-        # hidden = repackage_hidden(hidden)
-        hidden = model.init_hidden(args.batch_size)
-        model.zero_grad()
-        output, hidden = model(data, hidden)
-        loss = criterion(output, targets)
-        loss.backward()
+    sent_lens = list(train_data)
+    random.shuffle(sent_lens)
+    num_seqs = 0
+    for sent_len in sent_lens:
+        flat_dim = args.batch_size*(sent_len-1)
+        for batch, i in enumerate(range(0, train_data[sent_len].size(1) - 1, args.batch_size)):
+            # print(model.rnn.cell.w_f.weight)
+            data, targets = get_batch(train_data[sent_len], i, args.batch_size, prefix_len=sent_len-1)
+            targets.contiguous()
+            if args.unk:
+                data = add_unk(data, corpus)
 
-        # for w in range(len(data)):
-        #     print(corpus.dictionary.idx2word[data[w,:].cpu().data[0]])
+            hidden = model.init_hidden(args.batch_size)
+            model.zero_grad()
+            output, hidden = model(data, hidden)
+            loss = criterion(output.view(flat_dim, -1), targets.view(flat_dim))
+            loss.backward()
 
-        # if epoch > 0:
-        # for p in model.parameters():
-        #     print(p.grad)
-        #     break
-        #     is_none = p.grad is None
-        #     print("Dim of this parameter is %s and grad %s" % (str(p.shape), "is none" if is_none else "exists"))
+            optimizer.step()
 
-        # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
-        torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
-        for p in model.parameters():
-            if p.requires_grad:
-                p.data.add_(-lr, p.grad.data)
+            total_loss += loss.data
+            num_seqs += data.shape[1]
 
-        total_loss += loss.data
+            if batch % args.log_interval == 0 and batch > 0:
+                cur_loss = total_loss[0] / args.log_interval
+                elapsed = time.time() - start_time
+                print('| epoch {:3d} | {:5d}/{:5d} batches | lr (ADAM) | ms/batch {:5.2f} | '
+                        'loss {:5.2f} | {:5d} sequences | ppl NA'.format(
+                    epoch, batch, len(train_data) // args.prefix_len,
+                    elapsed * 1000 / args.log_interval, cur_loss), num_seqs)# , math.exp(cur_loss)))
+                model.update_callback(epoch, batch)
+                total_loss = 0
+                start_time = time.time()
 
-        if batch % args.log_interval == 0 and batch > 0:
-            cur_loss = total_loss[0] / args.log_interval
-            elapsed = time.time() - start_time
-            print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:02.2f} | ms/batch {:5.2f} | '
-                    'loss {:5.2f} | ppl {:8.2f}'.format(
-                epoch, batch, len(train_data) // args.prefix_len, lr,
-                elapsed * 1000 / args.log_interval, cur_loss, math.exp(cur_loss)))
-            model.update_callback(epoch, batch)
-            total_loss = 0
-            start_time = time.time()
+    return num_seqs
 
 # Loop over epochs.
-lr = args.lr
+# lr = args.lr
 best_val_loss = None
 
 # At any point you can hit Ctrl + C to break out of training early.
@@ -171,21 +176,18 @@ try:
     for epoch in range(1, args.epochs+1):
         # print(model.rnn.cell.w_f.weight)
         epoch_start_time = time.time()
-        train()
+        seqs_processed = train()
         val_loss = evaluate(val_data)
         print('-' * 89)
-        print('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} | '
-                'valid ppl {:8.2f}'.format(epoch, (time.time() - epoch_start_time),
-                                           val_loss, math.exp(val_loss)))
+        print('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} | num seqs {:5d} '
+                'valid ppl NA'.format(epoch, (time.time() - epoch_start_time),
+                                           val_loss, seqs_processed)) #, math.exp(val_loss)))
         print('-' * 89)
         # Save the model if the validation loss is the best we've seen so far.
         if not best_val_loss or val_loss < best_val_loss:
             with open(args.save, 'wb') as f:
                 torch.save(model, f)
             best_val_loss = val_loss
-        else:
-            # Anneal the learning rate if no improvement has been seen in the validation dataset.
-            lr /= 4.0
 except KeyboardInterrupt:
     print('-' * 89)
     print('Exiting from training early')

@@ -132,7 +132,7 @@ class LcRnnCell(nn.Module):
         self.w_b01.reset_parameters()
 
 
-    def forward(self, X, hidden=None):
+    def forward(self, X, index, length, hidden=None):
         
         prev_a, prev_b, prev_depth, _ = hidden
         batch_size = X.shape[0]
@@ -233,9 +233,11 @@ class LcRnnCell(nn.Module):
         # At time 0, and only at time 0, prev_Depth is 0, so we must choose 1/0
         mask = Variable(torch.ones(batch_size, 4).cuda())
         # if we're at depth 0, we can only allow 1/0
-        mask[:, (0,1,3)] *= (1-torch.eq(prev_depth,0).float())
+        mask[:, (0,1,3)] *= (1 - torch.eq(prev_depth,0).float())
         # if we're at depth d, we cannot allow 1/0
         mask[:, (2,)] *= (1 - torch.eq(prev_depth, self.depth).float())
+        # if we're at depth 1, we cannot allow 0/1 (reduce in the middle of the sentence)
+        mask[:, (1,)] *= (1 - torch.eq(prev_depth, 1).float())
 
         # Get the attention variables
         att_vars = mask * torch.nn.functional.softmax( torch.sigmoid(self.attention( next_state_flat[:, self.depth_size:] ) ) )
@@ -311,8 +313,6 @@ class LcRnn(nn.Module):
         self.cell.reset_parameters()
     
     def init_hidden(self, batch_size):
-        # if batch_size != 1:
-        #     raise NotImplementedError("This model only works with batch size 1 currently.")
         return (Variable(self.hidden_a_init.expand(batch_size, -1, -1)),
                     Variable(self.hidden_b_init.expand(batch_size, -1, -1)),
                     Variable(LongTensor(batch_size,1).zero_().cuda(), requires_grad=False),
@@ -323,7 +323,7 @@ class LcRnn(nn.Module):
         seq_len = X.size(0)
         output = []
         for step in range(seq_len):
-            a_next, b_next, depth_next, (f,j) = cell.forward(X[step], hx)
+            a_next, b_next, depth_next, (f,j) = cell.forward(X[step], step, seq_len, hx)
             hx_next = (a_next, b_next, depth_next, (f,j))
             # Right now we take the highest depth as the output -- may eventually want to 
             # cat together hidden variables at all depth levels (see cta_layers option in contsructor)
