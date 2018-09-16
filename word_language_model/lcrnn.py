@@ -240,7 +240,7 @@ class LcRnnCell(nn.Module):
         mask[:, (1,)] *= (1 - torch.eq(prev_depth, 1).float())
 
         # Get the attention variables
-        att_vars = mask * torch.nn.functional.softmax( torch.sigmoid(self.attention( next_state_flat[:, self.depth_size:] ) ) )
+        att_vars = mask * torch.nn.functional.softmax( torch.sigmoid(self.attention( next_state_flat[:, self.depth_size:] ) ), dim=1 )
 
         selection = ArgmaxST(att_vars)
 

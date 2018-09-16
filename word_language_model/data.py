@@ -1,4 +1,5 @@
 import os
+import re
 import torch
 from torch.autograd import Variable
 
@@ -82,6 +83,8 @@ def read_file_outside_corpus(fn, corpus):
             
             token = 0
             for word in words:
+                if not corpus.patt.search(word) is None:
+                    word = 'NUM_TOKEN'
                 if word not in corpus.dictionary.word2idx:
                     ids[token,0] = corpus.dictionary.word2idx['unk']
                 else:
@@ -112,6 +115,7 @@ class Dictionary(object):
 class Corpus(object):
     def __init__(self, path, max_seq_len):
         self.dictionary = Dictionary()
+        self.patt = re.compile('\d+')
         self.train = self.tokenize(os.path.join(path, 'train.txt'), max_seq_len)
         self.train_hist = None
         self.train_singletons = None
@@ -146,6 +150,8 @@ class Corpus(object):
                     tokens[len(words)] += len(words)
 
                 for word in words:
+                    if not self.patt.search(word) is None:
+                        word = 'NUM_TOKEN'
                     self.dictionary.add_word(word)
 
         # Tokenize file content
@@ -162,6 +168,8 @@ class Corpus(object):
                     ids[len(words)] = torch.LongTensor( tokens[len(words)] )
 
                 for word in words:
+                    if not self.patt.search(word) is None:
+                        word = 'NUM_TOKEN'
                     ids[len(words)][token_inds[len(words)]] = self.dictionary.word2idx[word]
                     token_inds[len(words)] += 1
 
