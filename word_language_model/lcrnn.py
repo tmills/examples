@@ -141,10 +141,16 @@ class LcRnnCell(nn.Module):
         batch_range = range(batch_size)
 
         # Depth "0" is initialized to 0 (needed for conditioning of depth 1)
-        ab_00 = [ Variable(torch.zeros(batch_size, 2*hidden_size).cuda()) ]
-        ab_01 = [ Variable(torch.zeros(batch_size, 2*hidden_size).cuda()) ]
-        ab_10 = [ Variable(torch.zeros(batch_size, 2*hidden_size).cuda()) ]
-        ab_11 = [ Variable(torch.zeros(batch_size, 2*hidden_size).cuda()) ]
+        ab_00 = [ Variable(torch.zeros(batch_size, 2*hidden_size)) ]
+        ab_01 = [ Variable(torch.zeros(batch_size, 2*hidden_size)) ]
+        ab_10 = [ Variable(torch.zeros(batch_size, 2*hidden_size)) ]
+        ab_11 = [ Variable(torch.zeros(batch_size, 2*hidden_size)) ]
+
+        if next(self.parameters()).is_cuda:
+            ab_00.cuda()
+            ab_01.cuda()
+            ab_10.cuda()
+            ab_11.cuda()
 
         sect_start = time.time()
 
@@ -231,7 +237,9 @@ class LcRnnCell(nn.Module):
 
         ## These are our deterministic masks: (Dis)Allow certain states at start, end, and depth limits
         # At time 0, and only at time 0, prev_Depth is 0, so we must choose 1/0
-        mask = Variable(torch.ones(batch_size, 4).cuda())
+        mask = Variable(torch.ones(batch_size, 4))
+        if next(self.parameters()).is_cuda:
+            mask.cuda()
         # if we're at depth 0, we can only allow 1/0
         mask[:, (0,1,3)] *= (1 - torch.eq(prev_depth,0).float())
         # if we're at depth d, we cannot allow 1/0
@@ -299,8 +307,9 @@ class LcRnn(nn.Module):
             raise Exception("NLC Model requires hidden size to be a multiple of 2")
         self.hidden_size = (hidden_size) // 2
         self.depth = num_layers
-        self.hidden_a_init = FloatTensor(1, self.depth+1, self.hidden_size).zero_().cuda()
-        self.hidden_b_init = FloatTensor(1, self.depth+1, self.hidden_size).zero_().cuda()
+        self.hidden_a_init = FloatTensor(1, self.depth+1, self.hidden_size).zero_()
+        self.hidden_b_init = FloatTensor(1, self.depth+1, self.hidden_size).zero_()
+
         self.cell = LcRnnCell(self.embed_size, hidden_size=self.hidden_size, depth=self.depth)
         if cat_layers:
             raise NotImplementedError("Cat'ing layers together is not yet supported. The representation will be the hidden states at the highest level.")
@@ -315,7 +324,7 @@ class LcRnn(nn.Module):
     def init_hidden(self, batch_size):
         return (Variable(self.hidden_a_init.expand(batch_size, -1, -1)),
                     Variable(self.hidden_b_init.expand(batch_size, -1, -1)),
-                    Variable(LongTensor(batch_size,1).zero_().cuda(), requires_grad=False),
+                    Variable(LongTensor(batch_size,1).zero_(), requires_grad=False),
                     None)
 
     @staticmethod

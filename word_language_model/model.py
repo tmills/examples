@@ -59,10 +59,15 @@ class RNNModel(nn.Module):
         emb = self.drop(self.encoder(input))
         output, hidden = self.rnn(emb, hidden)
         output = self.drop(output)
-        if not self.parsing:
-            output = self.decoder(output[:,:,:self.nhid])
-            # output = self.decoder(output.permute(1,0,2)[:,:,:self.nhid])
-        return output, hidden
+
+        lm_out = nn.functional.softmax(self.decoder(output[:,:,:self.nhid]))
+
+        if self.parsing:
+            ret_output = output
+        else:
+            ret_output = lm_out
+
+        return ret_output, hidden
 
     def init_hidden(self, bsz):
         weight = next(self.parameters()).data

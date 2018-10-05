@@ -117,7 +117,7 @@ def evaluate(data_source):
             output, hidden = model(data, hidden)
             # output_flat = output[-1,:,:]
             flat_dim = (sent_len-1) * eval_batch_size
-            total_loss += len(data) * criterion(output.view(flat_dim,-1), targets.view(flat_dim)).data
+            total_loss += len(data) * criterion(output.view(flat_dim,-1), targets.contiguous().view(flat_dim)).data
             # hidden = repackage_hidden(hidden)
     return total_loss[0] / len(data_source)
 
@@ -146,7 +146,7 @@ def train():
             hidden = model.init_hidden(args.batch_size)
             model.zero_grad()
             output, hidden = model(data, hidden)
-            loss = criterion(output.view(flat_dim, -1), targets.view(flat_dim))
+            loss = criterion(output.view(flat_dim, -1), targets.contiguous().view(flat_dim))
             loss.backward()
 
             optimizer.step()

@@ -55,7 +55,7 @@ def main(args):
         output, hidden = model(data, hidden)
         for batch_ind in range(eval_batch_size):
             for ind in range(len(data)):
-                fj_str = "%d/%d" % (int(output[ind][batch_ind][-2].data.cpu().numpy()[0]), int(output[ind][batch_ind][-1].data.cpu().numpy()[0]))
+                fj_str = "%d/%d" % (int(output[ind][batch_ind][-2].data.cpu().item()), int(output[ind][batch_ind][-1].data.cpu().item()))
                 sys.stdout.write('[%s] ' % (fj_str) )
                 sys.stdout.write('%s ' % (val_sents[i][ind]))
             sys.stdout.write('\n')
