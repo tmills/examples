@@ -139,18 +139,14 @@ class LcRnnCell(nn.Module):
         hidden_size = prev_b.shape[-1]
 
         batch_range = range(batch_size)
+        device = next(self.parameters()).device
 
         # Depth "0" is initialized to 0 (needed for conditioning of depth 1)
-        ab_00 = [ Variable(torch.zeros(batch_size, 2*hidden_size)) ]
-        ab_01 = [ Variable(torch.zeros(batch_size, 2*hidden_size)) ]
-        ab_10 = [ Variable(torch.zeros(batch_size, 2*hidden_size)) ]
-        ab_11 = [ Variable(torch.zeros(batch_size, 2*hidden_size)) ]
+        ab_00 = [ torch.zeros(batch_size, 2*hidden_size, device=device) ]
+        ab_01 = [ torch.zeros(batch_size, 2*hidden_size, device=device) ]
+        ab_10 = [ torch.zeros(batch_size, 2*hidden_size, device=device) ]
+        ab_11 = [ torch.zeros(batch_size, 2*hidden_size, device=device) ]
 
-        if next(self.parameters()).is_cuda:
-            ab_00.cuda()
-            ab_01.cuda()
-            ab_10.cuda()
-            ab_11.cuda()
 
         sect_start = time.time()
 
@@ -237,9 +233,7 @@ class LcRnnCell(nn.Module):
 
         ## These are our deterministic masks: (Dis)Allow certain states at start, end, and depth limits
         # At time 0, and only at time 0, prev_Depth is 0, so we must choose 1/0
-        mask = Variable(torch.ones(batch_size, 4))
-        if next(self.parameters()).is_cuda:
-            mask.cuda()
+        mask = torch.ones(batch_size, 4, device=device)
         # if we're at depth 0, we can only allow 1/0
         mask[:, (0,1,3)] *= (1 - torch.eq(prev_depth,0).float())
         # if we're at depth d, we cannot allow 1/0
@@ -322,9 +316,19 @@ class LcRnn(nn.Module):
         self.cell.reset_parameters()
     
     def init_hidden(self, batch_size):
-        return (Variable(self.hidden_a_init.expand(batch_size, -1, -1)),
-                    Variable(self.hidden_b_init.expand(batch_size, -1, -1)),
-                    Variable(LongTensor(batch_size,1).zero_(), requires_grad=False),
+        device = next(self.parameters()).device
+        hidden_zero = LongTensor(batch_size,1).zero_().to(device)
+        self.hidden_a_init = self.hidden_a_init.to(device)
+        self.hidden_b_init = self.hidden_b_init.to(device)
+
+        # return (Variable(self.hidden_a_init.expand(batch_size, -1, -1)),
+        #             Variable(self.hidden_b_init.expand(batch_size, -1, -1)),
+        #             Variable(LongTensor(batch_size,1).zero_(), requires_grad=False),
+        #             None)
+
+        return (self.hidden_a_init.expand(batch_size, -1, -1),
+                    self.hidden_b_init.expand(batch_size, -1, -1),
+                    hidden_zero,
                     None)
 
     @staticmethod
@@ -344,13 +348,8 @@ class LcRnn(nn.Module):
 
     def forward(self, X, hidden, length=None):
         seq_len, batch_size, _ = X.size()
-
-        if length is None:
-            length = Variable(torch.LongTensor([seq_len] * batch_size))
-            if X.is_cuda:
-                device = X.get_device()
-                # length = length.cuda(device)
-        
+        # device = X.device
+       
         if hidden is None:
             hx = Variable(torch.zeros(batch_size, self.hidden_size))
             hx = (hx, hx, None)
@@ -370,4 +369,4 @@ def equals(variable, val):
     if not len(variable.shape) == 1 or not variable.shape[0] == 1:
         raise Exception("The equals() method can only be called on ByteTensors with one value.")
     
-    return variable.cpu()[0].data[0] == val
+    return variable.device('cpu').item() == val

@@ -27,8 +27,8 @@ parser.add_argument('--nhid', type=int, default=200,
                     help='number of hidden units per layer')
 parser.add_argument('--nlayers', type=int, default=2,
                     help='number of layers')
-# parser.add_argument('--lr', type=float, default=20,
-#                     help='initial learning rate')
+parser.add_argument('--lr', type=float, default=0.001,
+                    help='initial learning rate')
 parser.add_argument('--clip', type=float, default=0.25,
                     help='gradient clipping')
 parser.add_argument('--epochs', type=int, default=40,
@@ -70,10 +70,11 @@ if torch.cuda.is_available():
 
 corpus = data.Corpus(args.data, max_seq_len=args.prefix_len)
 
-eval_batch_size = 10
-train_data = batchify(corpus.train, args.batch_size, args.cuda)
-val_data = batchify(corpus.valid, eval_batch_size, args.cuda)
-test_data = batchify(corpus.test, eval_batch_size, args.cuda)
+eval_batch_size = 100
+device = torch.device("cuda" if args.cuda else "cpu")
+train_data = batchify(corpus.train, args.batch_size, device)
+val_data = batchify(corpus.valid, eval_batch_size, device)
+test_data = batchify(corpus.test, eval_batch_size, device)
 
 ###############################################################################
 # Build the model
@@ -81,16 +82,15 @@ test_data = batchify(corpus.test, eval_batch_size, args.cuda)
 
 ntokens = len(corpus.dictionary)
 if args.load is None:
-    model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.tied)
+    model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.tied, corpus=corpus)
 else:
     with open(args.load, 'rb') as f:
         model = torch.load(f)
 
-if args.cuda:
-    model.cuda()
+model = model.to(device)
 
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(filter(lambda p: p.requires_grad,model.parameters()))
+optimizer = optim.Adam(filter(lambda p: p.requires_grad,model.parameters()), lr=args.lr)
 
 ###############################################################################
 # Training code
@@ -103,6 +103,9 @@ def repackage_hidden(h):
     else:
         return tuple(repackage_hidden(v) for v in h)
 
+def report_time(start_time, name):
+    length = time.time() - start_time
+    print('Running %s took %d')
 
 def evaluate(data_source):
     # Turn on evaluation mode which disables dropout.
@@ -110,17 +113,17 @@ def evaluate(data_source):
     total_loss = 0
     ntokens = len(corpus.dictionary)
     for sent_len in data_source.keys():
-        for i in range(0, data_source[sent_len].size(0)):
-            hidden = model.init_hidden(eval_batch_size)
+        for batch, i in enumerate(range(0, data_source[sent_len].size(1) - 1, eval_batch_size)):
             data, targets = get_batch(data_source[sent_len], i, eval_batch_size, prefix_len=sent_len-1, evaluation=True)
-            targets.contiguous()
+            actual_batch_size = data.shape[1]
+            hidden = model.init_hidden(actual_batch_size)
             output, hidden = model(data, hidden)
-            # output_flat = output[-1,:,:]
-            flat_dim = (sent_len-1) * eval_batch_size
-            total_loss += len(data) * criterion(output.view(flat_dim,-1), targets.contiguous().view(flat_dim)).data
-            # hidden = repackage_hidden(hidden)
-    return total_loss[0] / len(data_source)
 
+            flat_dim = (sent_len-1) * actual_batch_size
+            total_loss += ( criterion(output.view(flat_dim,-1), targets.contiguous().view(flat_dim)).data / sent_len)
+
+            # hidden = repackage_hidden(hidden)
+    return total_loss.item()
 
 def train():
     # Turn on training mode which enables dropout.
@@ -129,26 +132,27 @@ def train():
     start_time = time.time()
     ntokens = len(corpus.dictionary)
     
-    # Instead of an argument for bptt, only use sequences of length 3, where the first
-    # two words are input and the third is the target (get_batch() handles this).
     sent_lens = list(train_data)
     random.shuffle(sent_lens)
     num_seqs = 0
     for sent_len in sent_lens:
-        flat_dim = args.batch_size*(sent_len-1)
         for batch, i in enumerate(range(0, train_data[sent_len].size(1) - 1, args.batch_size)):
             # print(model.rnn.cell.w_f.weight)
             data, targets = get_batch(train_data[sent_len], i, args.batch_size, prefix_len=sent_len-1)
-            targets.contiguous()
+            actual_batch_size = data.shape[1]
             if args.unk:
                 data = add_unk(data, corpus)
 
-            hidden = model.init_hidden(args.batch_size)
+            # For the last batch the batch size may be smaller:
+            hidden = model.init_hidden(actual_batch_size)
             model.zero_grad()
             output, hidden = model(data, hidden)
+            flat_dim = actual_batch_size*(sent_len-1)
             loss = criterion(output.view(flat_dim, -1), targets.contiguous().view(flat_dim))
             loss.backward()
 
+            # Haven't seen any benefit but this would go here:
+            # torch.nn.utils.clip_grad_norm_(model.parameters(),0.1)
             optimizer.step()
 
             total_loss += loss.data
@@ -160,7 +164,7 @@ def train():
                 print('| epoch {:3d} | {:5d}/{:5d} batches | lr (ADAM) | ms/batch {:5.2f} | '
                         'loss {:5.2f} | {:5d} sequences | ppl NA'.format(
                     epoch, batch, len(train_data) // args.prefix_len,
-                    elapsed * 1000 / args.log_interval, cur_loss), num_seqs)# , math.exp(cur_loss)))
+                    elapsed * 1000 / args.log_interval, cur_loss, num_seqs))# , math.exp(cur_loss)))
                 model.update_callback(epoch, batch)
                 total_loss = 0
                 start_time = time.time()
@@ -199,6 +203,6 @@ with open(args.save, 'rb') as f:
 # Run on test data.
 test_loss = evaluate(test_data)
 print('=' * 89)
-print('| End of training | test loss {:5.2f} | test ppl {:8.2f}'.format(
-    test_loss, math.exp(test_loss)))
+print('| End of training | test loss {:5.2f} | test ppl NA'.format(
+    test_loss))
 print('=' * 89)

@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 from torch.autograd import Variable
 from lcrnn import LcRnn
@@ -7,7 +8,7 @@ import numpy as np
 class RNNModel(nn.Module):
     """Container module with an encoder, a recurrent module, and a decoder."""
 
-    def __init__(self, rnn_type, ntoken, ninp, nhid, nlayers, dropout=0.5, tie_weights=False):
+    def __init__(self, rnn_type, ntoken, ninp, nhid, nlayers, dropout=0.5, tie_weights=False, debug=False, corpus=None):
         super(RNNModel, self).__init__()
         self.drop = nn.Dropout(dropout)
         if rnn_type in ['LSTM', 'GRU']:
@@ -48,6 +49,8 @@ class RNNModel(nn.Module):
         self.nhid = nhid
         self.nlayers = nlayers
         self.parsing = False
+        self.debug = debug
+        self.corpus = corpus
 
     def init_weights(self):
         initrange = 0.1
@@ -55,17 +58,30 @@ class RNNModel(nn.Module):
         self.decoder.bias.data.fill_(0)
         self.decoder.weight.data.uniform_(-initrange, initrange)
 
-    def forward(self, input, hidden):
+    def forward(self, input, hidden, debug=False):
         emb = self.drop(self.encoder(input))
         output, hidden = self.rnn(emb, hidden)
-        output = self.drop(output)
+        # The LCRNN appends 2 non-state variables to the output so make we only get the
+        # subset of that state up to the hidden state size:
+        state = self.drop(output[:,:,:self.nhid])
+        decoded = self.decoder(state)
 
-        lm_out = nn.functional.softmax(self.decoder(output[:,:,:self.nhid]))
+        lm_out = nn.functional.softmax(decoded, dim=2)
+        ent_logs = []
+
+        if self.debug:
+            # FIXME not quite right yet.
+            ent_prod = lm_out * lm_out.log2()
+            ent_prod = torch.where(torch.isnan(ent_prod), torch.zeros_like(ent_prod), ent_prod)
+
+            out_ent = -(ent_prod).sum(2)
+            # [ent_logs.append(x) for x in out_ent]
+            # [print("# %f" % (x.item())) for x in out_ent]
 
         if self.parsing:
             ret_output = output
         else:
-            ret_output = lm_out
+            ret_output = decoded
 
         return ret_output, hidden
 

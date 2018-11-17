@@ -14,7 +14,7 @@ from torch.autograd import Variable
 # These columns are treated as independent by the model, which means that the
 # dependence of e. g. 'g' on 'f' can not be learned, but allows more efficient
 # batch processing.
-def batchify(data, bsz, cuda=True):
+def batchify(data, bsz, device):
 
     for sent_len in data.keys():
         # Work out how cleanly we can divide the dataset into bsz parts.
@@ -29,8 +29,7 @@ def batchify(data, bsz, cuda=True):
 
         # Evenly divide the data across the bsz batches.
         data[sent_len] = data[sent_len].view(-1, sent_len).t().contiguous()
-        if cuda:
-            data[sent_len] = data[sent_len].cuda()
+        data[sent_len] = data[sent_len].to(device)
     return data
 
 # get_batch subdivides the source data into chunks of length args.bptt.
@@ -60,7 +59,7 @@ def add_unk(data, corpus):
     unk_ind = dictionary.word2idx['unk']
     for i in range(data.shape[0]):
         for j in range(data.shape[1]):
-            if len((corpus.get_num_singletons() == data[i,j].data.cpu()[0]).nonzero()) > 0:
+            if len((corpus.get_num_singletons() == data[i,j].data.item()).nonzero()) > 0:
                 # this data point is a singleton, with a coin flip replace it with unk
                 if random.random() > 0.5:
                     data[i,j] = 0
@@ -95,12 +94,14 @@ def read_file_outside_corpus(fn, corpus):
 
     return tokens, sents
 
+eos_token = '<eos>'
 
 class Dictionary(object):
     def __init__(self):
         self.word2idx = {}
         self.idx2word = []
         self.add_word('unk')
+        self.add_word(eos_token)
 
     def add_word(self, word):
         if word not in self.word2idx:
@@ -140,7 +141,7 @@ class Corpus(object):
         with open(path, 'r') as f:
             tokens = {}
             for line in f:
-                words = line.split() #+ ['<eos>']
+                words = line.split() + [eos_token]
 
                 if len(words) > max_seq_len or len(words) < 2:
                     continue
@@ -159,7 +160,7 @@ class Corpus(object):
         with open(path, 'r') as f:
             ids = {} #torch.LongTensor(tokens)
             for line in f:
-                words = line.split() #[:seq_len] # + ['<eos>']
+                words = line.split() + [eos_token]
                 if len(words) > max_seq_len or len(words) < 2:
                     # ignore lines (sentences) with < 3 tokens
                     continue
