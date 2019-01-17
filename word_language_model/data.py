@@ -94,6 +94,18 @@ def read_file_outside_corpus(fn, corpus):
 
     return tokens, sents
 
+def read_glove(fn, dictionary):
+    emb_map = {}
+    with open(fn, 'r') as emb_file:
+        for line in emb_file.readlines():
+            line = line.rstrip()
+            toks = line.split(' ')
+            word = toks[0]
+            if word in dictionary.word2idx:
+                vec = [float(toks[x]) for x in range(1, len(toks))]
+                emb_map[word] = torch.FloatTensor(vec)
+    return emb_map
+
 eos_token = '<eos>'
 
 class Dictionary(object):

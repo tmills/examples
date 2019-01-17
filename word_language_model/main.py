@@ -12,7 +12,7 @@ import torch.optim as optim
 
 import data
 import model
-from data import batchify, get_batch, add_unk
+from data import batchify, get_batch, add_unk, read_glove
 
 parser = argparse.ArgumentParser(description='PyTorch Wikitext-2 RNN/LSTM Language Model')
 parser.add_argument('--prefix-len', type=int, default=3,
@@ -53,6 +53,8 @@ parser.add_argument('--load', type=str,  default=None,
                     help='path to load pre-trained model')
 parser.add_argument('--unk', action="store_true",
                     help='Replace rare words with \'unk\' randomly to train an unknown word embedding')
+parser.add_argument('--glove', type=str, default=None, required=False,
+                    help='Path to Glove embeddings file if pre-trained embeddings are used.')
                     
 args = parser.parse_args()
 
@@ -69,6 +71,15 @@ if torch.cuda.is_available():
 ###############################################################################
 
 corpus = data.Corpus(args.data, max_seq_len=args.prefix_len)
+embeddings = None
+if not args.glove is None:
+    embeddings = read_glove(args.glove, corpus.dictionary)
+
+if not embeddings is None:
+    first_tok = next(iter(embeddings))
+    if len(embeddings[first_tok]) != args.emsize:
+        print("ERROR: Embedding size (--emsize) %d is not the same as pre-trained embedding size %d" % (len(embeddings[first_tok]), args.emsize))
+        sys.exit(-1)
 
 eval_batch_size = 100
 device = torch.device("cuda" if args.cuda else "cpu")
@@ -82,7 +93,7 @@ test_data = batchify(corpus.test, eval_batch_size, device)
 
 ntokens = len(corpus.dictionary)
 if args.load is None:
-    model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.tied, corpus=corpus)
+    model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.tied, corpus=corpus, embeddings=embeddings)
 else:
     with open(args.load, 'rb') as f:
         model = torch.load(f)
@@ -159,7 +170,7 @@ def train():
             num_seqs += data.shape[1]
 
             if batch % args.log_interval == 0 and batch > 0:
-                cur_loss = total_loss[0] / args.log_interval
+                cur_loss = total_loss.item() / args.log_interval
                 elapsed = time.time() - start_time
                 print('| epoch {:3d} | {:5d}/{:5d} batches | lr (ADAM) | ms/batch {:5.2f} | '
                         'loss {:5.2f} | {:5d} sequences | ppl NA'.format(

@@ -19,7 +19,9 @@ def main(args):
               ('car', 'automobile'),
               ('year', 'month'),
               ('year', 'country'),
-              ('japan', 'country') ]
+              ('japan', 'country'),
+              ('japan', 'china'),
+              ('japan', 'germany') ]
 
     for pair in pairs:
         if pair[0] not in lookup:

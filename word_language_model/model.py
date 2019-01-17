@@ -8,7 +8,7 @@ import numpy as np
 class RNNModel(nn.Module):
     """Container module with an encoder, a recurrent module, and a decoder."""
 
-    def __init__(self, rnn_type, ntoken, ninp, nhid, nlayers, dropout=0.5, tie_weights=False, debug=False, corpus=None):
+    def __init__(self, rnn_type, ntoken, ninp, nhid, nlayers, dropout=0.5, tie_weights=False, debug=False, corpus=None, embeddings=None, hid_output=100):
         super(RNNModel, self).__init__()
         self.drop = nn.Dropout(dropout)
         if rnn_type in ['LSTM', 'GRU']:
@@ -25,7 +25,8 @@ class RNNModel(nn.Module):
                                  options are ['LSTM', 'GRU', 'NLC', 'RNN_TANH' or 'RNN_RELU']""")
             self.rnn = nn.RNN(ninp, nhid, nlayers, nonlinearity=nonlinearity, dropout=dropout)
         self.encoder = nn.Embedding(ntoken, ninp)
-        self.decoder = nn.Linear(nhid, ntoken)
+        self.decoder1 = nn.Linear(nhid, hid_output)
+        self.decoder2 = nn.Linear(hid_output, ntoken)
 
         # Optionally tie weights as in:
         # "Using the Output Embedding to Improve Language Models" (Press & Wolf 2016)
@@ -52,11 +53,26 @@ class RNNModel(nn.Module):
         self.debug = debug
         self.corpus = corpus
 
+        if not embeddings is None:
+            self.init_embeddings(embeddings)
+
     def init_weights(self):
         initrange = 0.1
         self.encoder.weight.data.uniform_(-initrange, initrange)
-        self.decoder.bias.data.fill_(0)
-        self.decoder.weight.data.uniform_(-initrange, initrange)
+        self.decoder1.bias.data.fill_(0)
+        self.decoder1.weight.data.uniform_(-initrange, initrange)
+        self.decoder2.bias.data.fill_(0)
+        self.decoder2.weight.data.uniform_(-initrange, initrange)
+
+    def init_embeddings(self, embeddings):
+        embedding = torch.zeros_like(self.encoder.weight)
+        embedding.normal_()
+        for word in embeddings.keys():
+            if word in self.corpus.dictionary.word2idx:
+                idx = self.corpus.dictionary.word2idx[word]
+                embedding[idx,:] = embeddings[word]
+                # self.encoder.weight.data[idx,:].set_(embeddings[word])
+        self.encoder = nn.Embedding.from_pretrained(embedding, freeze=False)
 
     def forward(self, input, hidden, debug=False):
         emb = self.drop(self.encoder(input))
@@ -64,7 +80,8 @@ class RNNModel(nn.Module):
         # The LCRNN appends 2 non-state variables to the output so make we only get the
         # subset of that state up to the hidden state size:
         state = self.drop(output[:,:,:self.nhid])
-        decoded = self.decoder(state)
+        hid_out = self.decoder1(state)
+        decoded = self.decoder2(hid_out)
 
         lm_out = nn.functional.softmax(decoded, dim=2)
         ent_logs = []

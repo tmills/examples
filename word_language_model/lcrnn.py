@@ -5,6 +5,7 @@ from torch import nn, FloatTensor, ByteTensor, LongTensor
 from torch.nn.functional import sigmoid
 from torch.autograd import Variable, Function
 import numpy as np
+import random
 import time
 
 class ArgmaxFunctionST(Function):
@@ -27,6 +28,7 @@ class ArgmaxFunctionST(Function):
         maxes = torch.max(input,1)[1]
         out = torch.zeros_like(input)
         out[range(batch_size), maxes] = 1
+        ctx.save_for_backward(out)
         return out
 
     @staticmethod
@@ -47,8 +49,13 @@ class ArgmaxFunctionST(Function):
         # ignored, the return statement is simple even when the function has
         # optional inputs.
         # input, weight, bias = ctx.saved_variables
-
-        return grad_output
+        # print("grad_output is %s" % (str(grad_output)))
+        weights = ctx.saved_variables[0]
+        # print("saved weights are %s" % (str(weights)) )
+        # print("raw grad output is %s" % (str(grad_output)) )
+        out = grad_output * weights
+        # print("output is transformed to %s"% (str(out)))
+        return out
 
 ArgmaxST = ArgmaxFunctionST.apply
 
@@ -133,7 +140,11 @@ class LcRnnCell(nn.Module):
 
 
     def forward(self, X, index, length, hidden=None):
-        
+        # A mode for learning to predict words, ignoring how to distinguish between parser states
+        # Set to true for pre-training, then set to False for fine-tuning
+        pretrain = False
+        dice = random.random()
+
         prev_a, prev_b, prev_depth, _ = hidden
         batch_size = X.shape[0]
         hidden_size = prev_b.shape[-1]
@@ -241,6 +252,13 @@ class LcRnnCell(nn.Module):
         # if we're at depth 1, we cannot allow 0/1 (reduce in the middle of the sentence)
         mask[:, (1,)] *= (1 - torch.eq(prev_depth, 1).float())
 
+        #  if we're in word-learning mode, disallow either 0/0 or 1/1. (Logic above takes care of forcing 1/0 where necessary)
+        if pretrain:
+            if dice > 0.5:
+                mask[:, 0] *= 0
+            else:
+                mask[:, 3] *= 0
+        
         # Get the attention variables
         att_vars = mask * torch.nn.functional.softmax( torch.sigmoid(self.attention( next_state_flat[:, self.depth_size:] ) ), dim=1 )
 
