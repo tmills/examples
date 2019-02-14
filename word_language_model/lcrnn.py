@@ -4,6 +4,7 @@ import torch
 from torch import nn, FloatTensor, ByteTensor, LongTensor
 from torch.nn.functional import sigmoid
 from torch.autograd import Variable, Function
+from torch.distributions import RelaxedOneHotCategorical
 import numpy as np
 import random
 import time
@@ -58,6 +59,61 @@ class ArgmaxFunctionST(Function):
         return out
 
 ArgmaxST = ArgmaxFunctionST.apply
+
+class SampleFunctionST(Function):
+    """Samples from a tensor whose values are in [0, 1] to a tensor with values in {0, 1}"""
+
+    @staticmethod
+    def forward(ctx, input, temperature):
+        """Forward pass
+        Parameters
+        ==========
+        :param input: input tensor
+        Returns
+        =======
+        :return: a one-hot tensor with 1 indicating the max of that input vector"""
+
+        # We can cache arbitrary Tensors for use in the backward pass using the
+        # save_for_backward method.
+        # ctx.save_for_backward(input)
+        batch_size = input.shape[0]
+        # maxes = torch.max(input,1)[1]
+        dist = RelaxedOneHotCategorical(temperature, input)
+        samples = dist.sample()
+        # probs = 
+        # out = torch.zeros_like(input)
+        # out[range(batch_size), samples] = 1
+        # ctx.save_for_backward(out)
+        # return out
+        return samples
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        """In the backward pass we receive a tensor containing the gradient of the
+        loss with respect to the output, and we need to compute the gradient of the
+        loss with respect to the input.
+        Parameters
+        ==========
+        :param grad_output: tensor that stores the gradients of the loss wrt. output
+        Returns
+        =======
+        :return: tensor that stores the gradients of the loss wrt. input"""
+
+        # This is a pattern that is very convenient - at the top of backward
+        # unpack saved_tensors and initialize all gradients w.r.t. inputs to
+        # None. Thanks to the fact that additional trailing Nones are
+        # ignored, the return statement is simple even when the function has
+        # optional inputs.
+        # input, weight, bias = ctx.saved_variables
+        # print("grad_output is %s" % (str(grad_output)))
+        # weights = ctx.saved_variables[0]
+        # print("saved weights are %s" % (str(weights)) )
+        # print("raw grad output is %s" % (str(grad_output)) )
+        # out = grad_output * weights
+        # print("output is transformed to %s"% (str(out)))
+        return grad_output
+
+SampleST = SampleFunctionST.apply
 
 class LcRnnCell(nn.Module):
     def __init__(self, input_size, depth=1, hidden_size=100):
@@ -125,6 +181,7 @@ class LcRnnCell(nn.Module):
 
         self.batch_mask_time = self.mask_time = self.finish_time = self.state_compute = 0
 
+        self.parsing = False
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -139,7 +196,7 @@ class LcRnnCell(nn.Module):
         self.w_b01.reset_parameters()
 
 
-    def forward(self, X, index, length, hidden=None):
+    def forward(self, X, index, length, hidden=None, temp=1.0):
         # A mode for learning to predict words, ignoring how to distinguish between parser states
         # Set to true for pre-training, then set to False for fine-tuning
         pretrain = False
@@ -260,9 +317,14 @@ class LcRnnCell(nn.Module):
                 mask[:, 3] *= 0
         
         # Get the attention variables
-        att_vars = mask * torch.nn.functional.softmax( torch.sigmoid(self.attention( next_state_flat[:, self.depth_size:] ) ), dim=1 )
+        dist = RelaxedOneHotCategorical(temp, torch.nn.functional.softmax( torch.sigmoid(self.attention( next_state_flat[:, self.depth_size:] ) ), dim=1 ))
+        att_vars = torch.nn.functional.normalize(mask * dist.sample())
+        # att_vars = torch.nn.functional.softmax(mask * SampleST(torch.nn.functional.softmax( torch.sigmoid(self.attention( next_state_flat[:, self.depth_size:] ) ), dim=1 ), temp))
 
-        selection = ArgmaxST(att_vars)
+        if self.parsing:
+            selection = ArgmaxST(att_vars)
+        else:
+            selection = att_vars
 
         sect_end = time.time()
         self.mask_time += (sect_end - sect_start)
@@ -326,6 +388,8 @@ class LcRnn(nn.Module):
         if cat_layers:
             raise NotImplementedError("Cat'ing layers together is not yet supported. The representation will be the hidden states at the highest level.")
         self.cat_layers = cat_layers
+        self.temperature = 1.0
+        self._parsing = False
 
         self.reset_parameters()
 
@@ -350,11 +414,11 @@ class LcRnn(nn.Module):
                     None)
 
     @staticmethod
-    def _forward_rnn(cell, X, hx):
+    def _forward_rnn(cell, X, hx, temperature=1.0):
         seq_len = X.size(0)
         output = []
         for step in range(seq_len):
-            a_next, b_next, depth_next, (f,j) = cell.forward(X[step], step, seq_len, hx)
+            a_next, b_next, depth_next, (f,j) = cell.forward(X[step], step, seq_len, hx, temp=temperature)
             hx_next = (a_next, b_next, depth_next, (f,j))
             # Right now we take the highest depth as the output -- may eventually want to 
             # cat together hidden variables at all depth levels (see cta_layers option in contsructor)
@@ -376,12 +440,30 @@ class LcRnn(nn.Module):
 
         layer_output = None
         layer_output, (last_a, last_b, last_depth, fj) = LcRnn._forward_rnn(
-                cell=self.cell, X=X, hx=hx)
+                cell=self.cell, X=X, hx=hx, temperature=self.temperature)
 
         return layer_output, (last_a, last_b, fj)
 
+
     def update_callback(self, epoch, batch):
         print("Compute time=%f, mask time=%f, batch mask time=%f, finish time=%f" % (self.cell.state_compute, self.cell.mask_time, self.cell.batch_mask_time, self.cell.finish_time))
+
+    def epoch_callback(self, epoch, epochs):        
+        self.temperature = get_temperature(epoch, epochs)
+
+    @property
+    def parsing(self):
+        return self._parsing
+    
+    @parsing.setter
+    def parsing(self, parsing):
+        self._parsing = parsing
+        self.cell.parsing = parsing
+
+
+def get_temperature(epoch, max_epochs):
+    percent_done = (100. * epoch) / epochs
+    return Math.exp(percent_done / 5.0)
 
 def equals(variable, val):
     if not len(variable.shape) == 1 or not variable.shape[0] == 1:

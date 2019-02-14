@@ -180,6 +180,7 @@ def train():
                 total_loss = 0
                 start_time = time.time()
 
+    model.epoch_callback(epoch, args.epochs)
     return num_seqs
 
 # Loop over epochs.

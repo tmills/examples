@@ -49,12 +49,22 @@ class RNNModel(nn.Module):
         self.rnn_type = rnn_type
         self.nhid = nhid
         self.nlayers = nlayers
-        self.parsing = False
+        self._parsing = False
         self.debug = debug
         self.corpus = corpus
+        self.rnn.parsing = self._parsing
 
         if not embeddings is None:
             self.init_embeddings(embeddings)
+
+    @property
+    def parsing(self):
+        return self._parsing
+
+    @parsing.setter
+    def parsing(self, parsing):
+        self._parsing = parsing
+        self.rnn.parsing = parsing
 
     def init_weights(self):
         initrange = 0.1
@@ -117,4 +127,11 @@ class RNNModel(nn.Module):
             self.rnn.update_callback(epochs, batch)
         except:
             # Do nothing
+            pass
+
+    def epoch_callback(self, epoch, epochs):
+        try:
+            self.rnn.epoch_callback(epoch, epochs)
+        except:
+            # do nothing
             pass
